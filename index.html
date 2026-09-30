@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定｜神经网络(WebWorker后台) 预测Y+概率区间</title>
+<title>磨削接刀标定｜神经网络 局部置信区间（Y±1.96σ(x)）</title>
 <style>
 *{box-sizing:border-box;font-family:system-ui}
 body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
@@ -39,12 +39,12 @@ th{background:#efefef}
 </div>
 
 <div class="box">
-<h3>🔢 神经网络训练 & 单点预测（Y+概率区间）</h3>
+<h3>🔢 神经网络训练 & 单点预测（期望Y + 局部对称残差区间）</h3>
 <div class="row">
     <button onclick="startTrain()">开始训练神经网络</button>
 </div>
 <div class="row">
-    <input id="evalX" placeholder="输入X预测Y">
+    <input id="evalX" placeholder="输入X预测期望Y">
     <button onclick="calcGivenX()">计算预测</button>
 </div>
 <div id="evalResult"></div>
@@ -55,7 +55,7 @@ th{background:#efefef}
 </div>
 
 <div class="box">
-<h3>📉 公差概率计算</h3>
+<h3>📉 公差概率计算（使用当前X位置局部σ）</h3>
 <div class="row">
     <input id="tolX" placeholder="目标X">
     <input id="targetY" placeholder="目标Y" value="0">
@@ -66,7 +66,7 @@ th{background:#efefef}
 </div>
 
 <div class="box">
-<h3>📋 批量参考表</h3>
+<h3>📋 批量参考表（σ随X自动变化）</h3>
 <div class="row">
     <input id="refXStart" placeholder="X起始" value="-0.19">
     <input id="refXEnd" placeholder="X结束" value="-0.18">
@@ -109,20 +109,29 @@ function getZ(mu,sigma,val){
     return (val-mu)/sigma;
 }
 
-// 内嵌Worker代码字符串【修复数组索引BUG】
+// Worker代码：双网络：均值网络(预测Y期望) + 方差网络(预测局部sigma)，8000轮
 const workerCode = `
 function tanh(v){return Math.tanh(v)}
+function relu(v){return Math.max(0, v)}
 function trainNet(points){
-    //轻量化网络 1输入 →12隐藏→6隐藏→1输出
-    const h1=12, h2=6;
-    let w1 = Array.from({length:1}, ()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
-    let b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
-    let w2 = Array.from({length:h1}, ()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.8));
-    let b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.2);
-    let w3 = Array.from({length:h2}, ()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.8));
+    //均值网络 1输入→16→8→1，输出期望Y
+    const h1=16, h2=8;
+    let w1 = Array.from({length:1}, ()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*1.0));
+    let b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.3);
+    let w2 = Array.from({length:h1}, ()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*1.0));
+    let b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.3);
+    let w3 = Array.from({length:h2}, ()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*1.0));
     let b3 = [0];
 
-    //归一化参数
+    //方差子网络，预测局部标准差
+    let vw1 = Array.from({length:1}, ()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
+    let vb1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
+    let vw2 = Array.from({length:h1}, ()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.8));
+    let vb2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.2);
+    let vw3 = Array.from({length:h2}, ()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.8));
+    let vb3 = [0];
+
+    //归一化
     const xs = points.map(p=>p.x);
     const ys = points.map(p=>p.y);
     const xMin = Math.min(...xs);
@@ -132,14 +141,14 @@ function trainNet(points){
     function normX(xRaw){ return 2*(xRaw - xMin)/(xMax - xMin) -1; }
     function denormY(yNorm){ return (yNorm+1)/2*(yMax-yMin)+yMin; }
 
-    const epochs = 2200;
-    const lr = 0.018;
-    const L2 = 0.0001;
+    const epochs = 8000;
+    const lr = 0.01;
+    const L2 = 0.00001; //降低正则，减少平滑，提升局部灵敏度
 
     for(let e=0;e<epochs;e++){
         for(let p of points){
             const xn = normX(p.x);
-            //前向传播
+            //===== 均值网络前向 =====
             let l1 = [];
             for(let j=0;j<h1;j++){
                 const s = b1[j] + xn * w1[0][j];
@@ -156,9 +165,9 @@ function trainNet(points){
             const yPred = denormY(yN);
             const err = yPred - p.y;
 
-            //反向传播
+            //均值网络反向传播
             const gradW3 = [];
-            for(let i=0;i<h2;i++) gradW3.push(err * l1[i] + L2 * w3[i][0]);
+            for(let i=0;i<h2;i++) gradW3.push(err * l2[i] + L2 * w3[i][0]);
             const gradB3 = err;
 
             const gradL2 = Array(h2).fill(0);
@@ -182,7 +191,7 @@ function trainNet(points){
             for(let j=0;j<h1;j++) gradW1.push( gradL1[j] * xn + L2 * w1[0][j] );
             const gradB1 = gradL1;
 
-            //权重更新【修复索引错误】
+            //更新均值网络权重
             for(let j=0;j<h1;j++) w1[0][j] -= lr * gradW1[j];
             for(let j=0;j<h1;j++) b1[j] -= lr * gradB1[j];
             for(let i=0;i<h1;i++){
@@ -191,10 +200,57 @@ function trainNet(points){
             for(let j=0;j<h2;j++) b2[j] -= lr * gradB2[j];
             for(let i=0;i<h2;i++) w3[i][0] -= lr*gradW3[i];
             b3[0] -= lr * gradB3;
+
+            //==== 方差网络，预测局部sigma，基于残差err ====
+            let vl1=[];
+            for(let j=0;j<h1;j++) vl1.push(tanh(vb1[j] + xn*vw1[0][j]));
+            let vl2=[];
+            for(let j=0;j<h2;j++){
+                let s=vb2[j];
+                for(let i=0;i<h1;i++) s+=vl1[i]*vw2[i][j];
+                vl2.push(tanh(s));
+            }
+            let varN = vb3[0];
+            for(let i=0;i<h2;i++) varN += vl2[i] * vw3[i][0];
+            const sigmaLocal = Math.max(0.0001, Math.exp(varN));
+            const lossVar = (err*err - sigmaLocal*sigmaLocal);
+
+            //方差网络反向
+            const gradVW3 = [];
+            for(let i=0;i<h2;i++) gradVW3.push(lossVar * vl2[i]);
+            const gradVB3 = lossVar;
+
+            const gradVL2 = Array(h2).fill(0);
+            for(let i=0;i<h2;i++) gradVL2[i] = lossVar * vw3[i][0] * (1-vl2[i]*vl2[i]);
+
+            const gradVW2 = [];
+            for(let i=0;i<h1;i++){
+                const row=[];
+                for(let j=0;j<h2;j++) row.push(gradVL2[j]*vl1[i]);
+                gradVW2.push(row);
+            }
+            const gradVB2 = gradVL2;
+
+            const gradVL1 = Array(h1).fill(0);
+            for(let i=0;i<h1;i++){
+                let sum=0;
+                for(let j=0;j<h2;j++) sum += gradVL2[j] * vw2[i][j];
+                gradVL1[i] = sum * (1-vl1[i]*vl1[i]);
+            }
+            const gradVW1 = [];
+            for(let j=0;j<h1;j++) gradVW1.push( gradVL1[j] * xn );
+            const gradVB1 = gradVL1;
+
+            for(let j=0;j<h1;j++) vw1[0][j] -= lr*0.5 * gradVW1[j];
+            for(let j=0;j<h1;j++) vb1[j] -= lr*0.5 * gradVB1[j];
+            for(let i=0;i<h1;i++) for(let j=0;j<h2;j++) vw2[i][j] -= lr*0.5*gradVW2[i][j];
+            for(let j=0;j<h2;j++) vb2[j] -= lr*0.5 * gradVB2[j];
+            for(let i=0;i<h2;i++) vw3[i][0] -= lr*0.5*gradVW3[i];
+            vb3[0] -= lr*0.5 * gradVB3;
         }
     }
-    //计算残差标准差
-    let sumErrSq=0;
+    //计算全局平均残差
+    let sumErr=0;
     for(let p of points){
         const xn = normX(p.x);
         let l1=[];
@@ -203,10 +259,15 @@ function trainNet(points){
         for(let j=0;j<h2;j++){let s=b2[j];for(let i=0;i<h1;i++)s+=l1[i]*w2[i][j];l2.push(tanh(s));}
         let yn = b3[0]; for(let i=0;i<h2;i++) yn += l2[i]*w3[i][0];
         const yp = denormY(yn);
-        sumErrSq += (yp-p.y)*(yp-p.y);
+        sumErr += (p.y - yp);
     }
-    const sigma = Math.sqrt(sumErrSq / (points.length-1));
-    return {w1,b1,w2,b2,w3,b3,norm:{xMin,xMax,yMin,yMax},sigma};
+    const meanRes = sumErr / points.length;
+    return {
+        w1,b1,w2,b2,w3,b3,
+        vw1,vb1,vw2,vb2,vw3,vb3,
+        norm:{xMin,xMax,yMin,yMax},
+        meanRes
+    };
 }
 self.onmessage = (msg)=>{
     const res = trainNet(msg.data);
@@ -221,23 +282,25 @@ function createWorker(){
     worker.onmessage = (e)=>{
         modelWeights = e.data;
         normPara = e.data.norm;
-        document.getElementById("fitInfo").innerHTML = `<div class="info">✅神经网络训练完成<br>残差标准差σ=${modelWeights.sigma.toFixed(6)}</div>`;
+        document.getElementById("fitInfo").innerHTML = `<div class="info">✅神经网络训练完成<br>平均残差=${modelWeights.meanRes.toFixed(6)}（越接近0，残差以期望Y对半分）</div>`;
     }
     worker.onerror = (err)=>{
         document.getElementById("fitInfo").innerHTML = `<span class="warn">训练出错：${err.message}</span>`;
     }
 }
 
-//预测函数：输入X，输出预测Y，波动σ
+//预测函数：输入X，输出【期望Y + 当前X位置局部σ】
 function nnPredict(xRaw){
     if(!modelWeights || !normPara) return null;
-    const {w1,b1,w2,b2,w3,b3} = modelWeights;
+    const {w1,b1,w2,b2,w3,b3, vw1,vb1,vw2,vb2,vw3,vb3} = modelWeights;
     const {xMin,xMax,yMin,yMax} = normPara;
     function normX(x){ return 2*(x - xMin)/(xMax - xMin) -1; }
     function denormY(yNorm){ return (yNorm+1)/2*(yMax-yMin)+yMin; }
     const xn = normX(xRaw);
     const h1=w1[0].length;
     const h2=w2[0].length;
+
+    //均值网络预测期望Y
     let l1=[];
     for(let j=0;j<h1;j++) l1.push(Math.tanh(b1[j] + xn * w1[0][j]));
     let l2=[];
@@ -248,9 +311,22 @@ function nnPredict(xRaw){
     }
     let yn = b3[0];
     for(let i=0;i<h2;i++) yn += l2[i] * w3[i][0];
-    const yPred = denormY(yn);
-    const sigma = modelWeights.sigma;
-    return {yPred, sigma};
+    const yExpect = denormY(yn);
+
+    //方差网络预测局部sigma
+    let vl1=[];
+    for(let j=0;j<h1;j++) vl1.push(Math.tanh(vb1[j] + xn*vw1[0][j]));
+    let vl2=[];
+    for(let j=0;j<h2;j++){
+        let s=vb2[j];
+        for(let i=0;i<h1;i++) s+=vl1[i]*vw2[i][j];
+        vl2.push(Math.tanh(s));
+    }
+    let varN = vb3[0];
+    for(let i=0;i<h2;i++) varN += vl2[i] * vw3[i][0];
+    const sigmaLocal = Math.max(0.0001, Math.exp(varN));
+
+    return {yExpect, sigma:sigmaLocal};
 }
 
 function startTrain(){
@@ -258,7 +334,7 @@ function startTrain(){
         document.getElementById("fitInfo").innerHTML = `<span class="warn">至少3个测点才能训练</span>`;
         return;
     }
-    document.getElementById("fitInfo").innerHTML = `<span>后台正在训练神经网络，页面不会卡死，可以继续操作</span>`;
+    document.getElementById("fitInfo").innerHTML = `<span>后台训练神经网络（8000轮，时间稍久，页面不卡死）</span>`;
     if(!worker) createWorker();
     worker.postMessage([...pointList]);
 }
@@ -317,15 +393,15 @@ function calcGivenX(){
         document.getElementById("evalResult").innerHTML = `<span class="warn">先训练模型</span>`;
         return;
     }
-    const y = pred.yPred;
+    const y = pred.yExpect;
     const sigma = pred.sigma;
     const low95 = y - 1.96*sigma;
     const high95 = y +1.96*sigma;
     let html = `
     <div>输入 X = ${xv.toFixed(6)}</div>
-    <div class="info">✅预测目标Y = ${y.toFixed(6)}</div>
-    <div>工艺波动标准差 σ = ${sigma.toFixed(6)}</div>
-    <div class="prob-text">95%置信区间：[${low95.toFixed(6)} , ${high95.toFixed(6)}]</div>
+    <div class="info">✅期望Y = ${y.toFixed(6)}</div>
+    <div>当前位置局部σ = ${sigma.toFixed(6)}</div>
+    <div class="prob-text">95%对称区间：[${low95.toFixed(6)} , ${high95.toFixed(6)}]</div>
     `;
     document.getElementById("evalResult").innerHTML = html;
 }
@@ -339,8 +415,8 @@ function calcTolProb(){
         document.getElementById("probResult").innerHTML = `<span class="warn">先训练模型</span>`;
         return;
     }
-    const zLow = getZ(pred.yPred, pred.sigma, targetY - tol);
-    const zHigh = getZ(pred.yPred, pred.sigma, targetY + tol);
+    const zLow = getZ(pred.yExpect, pred.sigma, targetY - tol);
+    const zHigh = getZ(pred.yExpect, pred.sigma, targetY + tol);
     const prob = normCdf(zHigh) - normCdf(zLow);
     const pct = Math.max(0, Math.min(100, prob*100));
     document.getElementById("probResult").innerHTML = `<div class="prob-text">公差合格概率：${pct.toFixed(2)} %</div>`;
@@ -358,16 +434,16 @@ function solveY0(){
     let xa=xMin, xb=xMax;
     for(let iter=0;iter<80;iter++){
         const xmid = (xa+xb)/2;
-        const ym = nnPredict(xmid).yPred;
-        const ya = nnPredict(xa).yPred;
+        const ym = nnPredict(xmid).yExpect;
+        const ya = nnPredict(xa).yExpect;
         if(ya * ym <=0) xb=xmid; else xa=xmid;
     }
     const rootX = (xa+xb)/2;
     const predRoot = nnPredict(rootX);
-    const low95 = predRoot.yPred -1.96*predRoot.sigma;
-    const high95 = predRoot.yPred +1.96*predRoot.sigma;
+    const low95 = predRoot.yExpect -1.96*predRoot.sigma;
+    const high95 = predRoot.yExpect +1.96*predRoot.sigma;
     let html = `<div class="info">✅Y=0零点 X = ${rootX.toFixed(6)}</div>
-    <div>预测Y=${predRoot.yPred.toFixed(6)}，95%置信区间 [${low95.toFixed(6)}, ${high95.toFixed(6)}]</div>`;
+    <div>期望Y=${predRoot.yExpect.toFixed(6)}，95%对称残差区间 [${low95.toFixed(6)}, ${high95.toFixed(6)}]</div>`;
     document.getElementById("zeroResult").innerHTML = html;
 }
 
@@ -383,14 +459,14 @@ function buildRefTable(){
         document.getElementById("refTable").innerHTML = `<span class="warn">参数错误</span>`;
         return;
     }
-    let html = `<table><tr><th>X</th><th>预测Y</th><th>σ波动</th><th>95%下限</th><th>95%上限</th></tr>`;
+    let html = `<table><tr><th>X</th><th>期望Y</th><th>局部σ</th><th>95%下限</th><th>95%上限</th></tr>`;
     for(let x=xStart;x <= xEnd+step/2;x+=step){
         const p = nnPredict(x);
-        const low = p.yPred -1.96*p.sigma;
-        const high = p.yPred +1.96*p.sigma;
+        const low = p.yExpect -1.96*p.sigma;
+        const high = p.yExpect +1.96*p.sigma;
         html += `<tr>
         <td>${x.toFixed(6)}</td>
-        <td>${p.yPred.toFixed(6)}</td>
+        <td>${p.yExpect.toFixed(6)}</td>
         <td>${p.sigma.toFixed(6)}</td>
         <td>${low.toFixed(6)}</td>
         <td>${high.toFixed(6)}</td>
