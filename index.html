@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>磨削接刀标定计算器‑多设备版【多项式+动态阶数拉格朗日插值+概率调机表】</title>
+<style>
+*{box-sizing:border-box;font-family:system-ui}
+body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
+.box{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
+h3{margin-top:0;font-size:16px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
+input{padding:6px 8px;width:140px;border:1px solid #bbb;border-radius:4px;font-size:14px}
+select{padding:6px 8px;border:1px solid #bbb;border-radius:4px;font-size:14px;min-width:160px}
+button{padding:6px 12px;border:none;border-radius:4px;background:#2563eb;color:#fff;cursor:pointer;font-size:14px}
+button.del{background:#dc2626}
+button.gray{background:#666}
+button.prob{background:#028448}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:1px solid #ccc;padding:6px;text-align:center}
+th{background:#efefef}
+.warn{color:#c00;font-weight:bold}
+.info{color:#066;font-weight:bold}
+.prob-text{color:#028448;font-weight:bold}
+html,body{height:100%;margin:0;padding:0}
+.slide-wrap{display:flex;align-items:center;gap:8px;width:320px}
+.slide-wrap input[type="range"]{flex:1;width:auto}
+</style>
+</head>
+<body>
+<div class="box">
+<h3>📊 磨削接刀标定工具【多设备管理】</h3>
+<div class="row">
+    <select id="deviceSelect">
+    </select>
+    <button onclick="createNewDevice()">新建设备</button>
+    <button class="gray" onclick="deleteCurrentDevice()">删除当前设备</button>
+    <button onclick="exportDeviceCSV()">导出本设备CSV</button>
+</div>
+<div class="row">
+    <input id="inX" placeholder="输入X，例：-0.207">
+    <input id="inY" placeholder="输入Y，例：0.003">
+    <button onclick="addPoint()">添加数据点</button>
+    <button onclick="clearAllPoints()">清空本设备测点</button>
+</div>
+<table>
+<thead><tr><th>序号</th><th>X (mm)</th><th>Y (mm)</th><th>操作</th></tr></thead>
+<tbody id="dataTable"></tbody>
+</table>
+</div>
+
+<div class="box">
+<h3>🔢 计算区（原有：多项式 / 拉格朗日）</h3>
+<div class="row">
+    <select id="fitOrderSelect">
+    </select>
+    <span>多项式拟合阶数（磨削接刀建议1‑2阶，高阶易出现物理震荡）</span>
+</div>
+<div class="row">
+    <select id="lagOrderSelect">
+    </select>
+    <span>拉格朗日插值阶数（推荐4阶；测点数量必须大于插值阶数）</span>
+</div>
+<div class="row">
+    <input id="evalX" placeholder="输入X求Y，例 -0.186">
+    <button onclick="calcGivenX()">计算该X对应的Y</button>
+</div>
+<div id="evalResult"></div>
+<div class="row" style="margin-top:8px">
+<button onclick="solveY0()">求解 Y=0 时的X零点（有效区间根）</button>
+</div>
+<div id="zeroResult"></div>
+</div>
+
+<!-- ========== 公差约束概率寻优模块 ========== -->
+<div class="box">
+<h3 class="prob-text">📉 公差约束概率寻优 | 限定Y±公差范围</h3>
+<div class="row">
+    <input id="targetY" value="0.0000" placeholder="目标Y">
+    <input id="tolerance" value="0.002" placeholder="允许±公差">
+    <input id="kernelSigma" value="0.08" placeholder="高斯核带宽(mm)">
+    <button class="prob" onclick="calcToleranceOptimal()">查找满足公差的最优X</button>
+</div>
+<div id="probResult"></div>
+<div class="row" style="margin-top:8px">
+    <button class="prob" onclick="buildToleranceProbTable()">生成概率公差参考表</button>
+</div>
+<div id="probTable"></div>
+</div>
+
+<div class="box">
+<h3>📈 拟合结果（选定阶数多项式）</h3>
+<div id="fitInfo"></div>
+</div>
+
+<div class="box">
+<h3>📋 概率调机参考表【新增：公差内概率】</h3>
+<div class="row">
+    <input id="refXStart" value="-0.35" placeholder="插值起始X">
+    <input id="refXEnd" value="0.00" placeholder="插值结束X">
+    <input id="refStep" value="0.002" placeholder="步长 mm">
+    <button onclick="buildRefTable()">生成参考表</button>
+</div>
+<div id="refTable"></div>
+</div>
+
+<script>
+const STORAGE_KEY = "grind_calib_devices";
+let deviceList = [];
+let activeDeviceId = null;
+let currentFitCoef = null;
+let currentFitOrder = 1;
+let currentLagOrder = 4;
+
+const DEFAULT_REF = {xStart:-0.35, xEnd:0.00, step:0.002};
+
+// ======================【数学工具：标准正态分布CDF，用于概率计算】======================
+function normCdf(z) {
+    if (z < -8) return 0;
+    if (z > 8) return 1;
+    const a1 = 0.319381530;
+    const a2 = -0.356563782;
+    const a3 = 1.781477937;
+    const a4 = -1.821255978;
+    const a5 = 1.330274429;
+    const p = 0.2316419;
+    const c = 0.39894228;
+    let t = 1 / (1 + p * Math.abs(z));
+    let poly = t*(a1 + t*(a2 + t*(a3 + t*(a4 + t*a5))));
+    let nd = 1 - c * Math.exp(-0.5*z*z) * poly;
+    return z >= 0 ? nd : 1 - nd;
+}
+
+// ======================【高斯核加权统计函数】======================
+function gaussianWeightStats(xQuery, points, kernelSigma) {
+    let sumW = 0;
+    let sumWY = 0;
+    let sumWY2 = 0;
+    for(let p of points){
+        const dx = p.x - xQuery;
+        const w = Math.exp(-(dx*dx)/(2*kernelSigma*kernelSigma));
+        sumW += w;
+        sumWY += w * p.y;
+        sumWY2 += w * p.y * p.y;
+    }
+    if(sumW < 1e-12){
+        return {mu:NaN, sigma:NaN, totalWeight:0};
+    }
+    const mu = sumWY / sumW;
+    const varY = sumWY2 / sumW - mu*mu;
+    const sigma = Math.sqrt(Math.max(varY, 1e-12));
+    return {mu, sigma, totalWeight:sumW};
+}
+
+/**
+ * 计算：Y落在 [targetY-tol, targetY+tol] 的概率
+ */
+function calcYInTolProb(mu, sigma, targetY, tol){
+    if(sigma <= 1e-12) return mu >= targetY-tol && mu <= targetY+tol ? 100 : 0;
+    const z1 = ( (targetY - tol) - mu ) / sigma;
+    const z2 = ( (targetY + tol) - mu ) / sigma;
+    const prob = normCdf(z2) - normCdf(z1);
+    return Math.max(0, Math.min(100, prob * 100));
+}
+
+/**
+ * 公差约束寻优：寻找X，95%置信区间落在 [Yt-Tol, Yt+Tol]
+ */
+function findToleranceOptimalX(points, targetY, tolerance, kernelSigma, sampleCount=500){
+    const xs = points.map(p=>p.x);
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    const lowerBound = targetY - tolerance;
+    const upperBound = targetY + tolerance;
+
+    let bestX = NaN;
+    let bestMu = NaN;
+    let bestSigma = NaN;
+    let bestGap = Infinity;
+    let hasValidRegion = false;
+
+    const step = (xMax - xMin)/sampleCount;
+    for(let i=0; i<=sampleCount; i++){
+        const xEval = xMin + i * step;
+        const stat = gaussianWeightStats(xEval, points, kernelSigma);
+        if(isNaN(stat.mu)) continue;
+        const confLow = stat.mu - 1.96 * stat.sigma;
+        const confHigh = stat.mu + 1.96 * stat.sigma;
+
+        const satisfyTol = (confLow >= lowerBound - 1e-12) && (confHigh <= upperBound +1e-12);
+        if(satisfyTol){
+            hasValidRegion = true;
+            const gapToTarget = Math.abs(stat.mu - targetY);
+            if(gapToTarget < bestGap){
+                bestGap = gapToTarget;
+                bestX = xEval;
+                bestMu = stat.mu;
+                bestSigma = stat.sigma;
+            }
+        }
+    }
+
+    if(!hasValidRegion){
+        let fallbackX = NaN;
+        let fallbackMu = NaN;
+        let fallbackSigma = NaN;
+        let minAbsY = Infinity;
+        for(let i=0; i<=sampleCount; i++){
+            const xEval = xMin + i * step;
+            const stat = gaussianWeightStats(xEval, points, kernelSigma);
+            if(isNaN(stat.mu)) continue;
+            const absY = Math.abs(stat.mu - targetY);
+            if(absY < minAbsY){
+                minAbsY = absY;
+                fallbackX = xEval;
+                fallbackMu = stat.mu;
+                fallbackSigma = stat.sigma;
+            }
+        }
+        return {
+            hasValid:false,
+            bestX:fallbackX,
+            bestMu:fallbackMu,
+            bestSigma:fallbackSigma,
+            xMin,xMax,lowerBound,upperBound
+        }
+    }
+    return {
+        hasValid:true,
+        bestX,bestMu,bestSigma,
+        xMin,xMax,lowerBound,upperBound
+    }
+}
+
+function calcToleranceOptimal(){
+    const probDiv = document.getElementById("probResult");
+    const dev = getActiveDevice();
+    if(!dev || dev.points.length <3){
+        probDiv.innerHTML = `<span class="warn">测点至少需要3个，才能做概率统计估算</span>`;
+        return;
+    }
+    const targetY = parseFloat(document.getElementById("targetY").value);
+    const tolerance = parseFloat(document.getElementById("tolerance").value);
+    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
+    if(isNaN(targetY) || isNaN(tolerance) || isNaN(kernelSigma) || kernelSigma <=0 || tolerance <=0){
+        probDiv.innerHTML = `<span class="warn">参数非法：公差、高斯带宽必须>0</span>`;
+        return;
+    }
+    const res = findToleranceOptimalX(dev.points, targetY, tolerance, kernelSigma);
+    if(isNaN(res.bestX)){
+        probDiv.innerHTML = `<span class="warn">搜索失败，请检查测点或高斯带宽</span>`;
+        return;
+    }
+    const conf95Low = res.bestMu - 1.96 * res.bestSigma;
+    const conf95High = res.bestMu + 1.96 * res.bestSigma;
+    const passProb = calcYInTolProb(res.bestMu, res.bestSigma, targetY, tolerance);
+    let html = "";
+    if(res.hasValid){
+        html += `<div class="prob-text">✅找到满足±${tolerance.toFixed(6)}公差的最优补偿X</div>`;
+    }else{
+        html += `<div class="warn">❌警告：**机床固有波动过大，不存在X可以稳定满足±${tolerance.toFixed(6)}公差**</div>`;
+        html += `<div class="warn">下面是均值最接近目标的备选补偿值，但95%概率区间会超出设定公差！</div>`;
+    }
+    html += `
+    <div>搜索区间 X ∈ [${res.xMin.toFixed(4)}, ${res.xMax.toFixed(4)}]</div>
+    <div>目标Y = ${targetY.toFixed(6)}，允许范围：Y ∈ [${res.lowerBound.toFixed(6)}, ${res.upperBound.toFixed(6)}]</div>
+    <div><b>推荐补偿 X = ${res.bestX.toFixed(6)} mm</b></div>
+    <div>该位置预测平均误差 μ = ${res.bestMu.toFixed(6)} mm</div>
+    <div>Y重复波动标准差 σ = ${res.bestSigma.toFixed(6)} mm</div>
+    <div>95%置信区间 Y ∈ [${conf95Low.toFixed(6)}, ${conf95High.toFixed(6)}] mm</div>
+    <div class="prob-text">✅落在公差内理论概率：${passProb.toFixed(2)} %</div>
+    `;
+    if(res.hasValid){
+        html += `<div class="info">✅置信区间完全落在公差带内，在统计意义上，95%加工结果满足公差。</div>`;
+    }else{
+        html += `<div class="warn">⚠️机床本身的重复波动大于设定公差，即使调整补偿，依然有大概率超差，优先检修机床稳定性。</div>`;
+    }
+    html += `<div class="warn">⚠️统计计算值，上机前必须小步微调验证！</div>`;
+    probDiv.innerHTML=html;
+}
+
+function buildToleranceProbTable(){
+    const tableDiv = document.getElementById("probTable");
+    const dev = getActiveDevice();
+    if(!dev || dev.points.length <3){
+        tableDiv.innerHTML = `<span class="warn">测点至少3个生成概率公差参考表</span>`;
+        return;
+    }
+    const xStart = parseFloat(document.getElementById("refXStart").value);
+    const xEnd = parseFloat(document.getElementById("refXEnd").value);
+    const step = parseFloat(document.getElementById("refStep").value);
+    const targetY = parseFloat(document.getElementById("targetY").value);
+    const tolerance = parseFloat(document.getElementById("tolerance").value);
+    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
+    if(isNaN(xStart)||isNaN(xEnd)||isNaN(step)||step<=0){
+        tableDiv.innerHTML="<span class='warn'>参考区间参数错误</span>";
+        return;
+    }
+    if(xStart>xEnd) [xStart,xEnd]=[xEnd,xStart];
+    const lowerBound = targetY - tolerance;
+    const upperBound = targetY + tolerance;
+    let html = `<table><tr>
+        <th>X(mm)</th>
+        <th>加权均值μ(mm)</th>
+        <th>标准差σ(mm)</th>
+        <th>95%置信下限</th>
+        <th>95%置信上限</th>
+        <th>落在公差内概率%</th>
+        <th>是否满足公差±${tolerance}</th>
+    </tr>`;
+    for(let xv=xStart; xv <= xEnd +1e-9; xv += step){
+        const stat = gaussianWeightStats(xv, dev.points, kernelSigma);
+        if(isNaN(stat.mu)){
+            html += `<tr><td>${xv.toFixed(6)}</td><td>--</td><td>--</td><td>--</td><td>--</td><td>--</td><td>--</td></tr>`;
+            continue;
+        }
+        const cLow = stat.mu - 1.96 * stat.sigma;
+        const cHigh = stat.mu + 1.96 * stat.sigma;
+        const ok = (cLow >= lowerBound -1e-12) && (cHigh <= upperBound +1e-12);
+        const pct = calcYInTolProb(stat.mu, stat.sigma, targetY, tolerance);
+        html += `<tr>
+        <td>${xv.toFixed(6)}</td>
+        <td>${stat.mu.toFixed(6)}</td>
+        <td>${stat.sigma.toFixed(6)}</td>
+        <td>${cLow.toFixed(6)}</td>
+        <td>${cHigh.toFixed(6)}</td>
+        <td style="${pct>90?"color:green":pct>50?"#cc7700":"red"}">${pct.toFixed(2)}</td>
+        <td style="${ok?"color:green":"color:red"}">${ok?"✅合格":"❌超差风险"}</td>
+        </tr>`;
+    }
+    html += `</table>
+    <div class="info">表格说明：✅=95%置信区间全部落在你设定的Y±公差内；❌=存在超差概率</div>
+    <div class="info">公差内概率%：重复加工，尺寸落在公差区间理论百分比</div>
+    <div class="warn">⚠️远离测点区域加权权重极低，统计结果可信度下降。</div>`;
+    tableDiv.innerHTML = html;
+}
+
+// ==========【新增：调机参考表（原表）增加概率列】==========
+function buildRefTable(){
+    const tableDiv = document.getElementById("refTable");
+    const dev = getActiveDevice();
+    if(!dev || dev.points.length <3){
+        tableDiv.innerHTML = `<span class="warn">至少3个测点生成调机表</span>`;
+        return;
+    }
+    const xStart = parseFloat(document.getElementById("refXStart").value);
+    const xEnd = parseFloat(document.getElementById("refXEnd").value);
+    const step = parseFloat(document.getElementById("refStep").value);
+    const targetY = parseFloat(document.getElementById("targetY").value);
+    const tolerance = parseFloat(document.getElementById("tolerance").value);
+    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
+    if(isNaN(xStart)||isNaN(xEnd)||isNaN(step)||step<=0){
+        tableDiv.innerHTML="<span class='warn'>区间参数错误</span>";
+        return;
+    }
+    if(xStart>xEnd) [xStart,xEnd]=[xEnd,xStart];
+
+    let html = `<table>
+    <tr>
+        <th>补偿X(mm)</th>
+        <th>预测Y均值(mm)</th>
+        <th>σ波动(mm)</th>
+        <th>公差内概率%</th>
+    </tr>`;
+    for(let xv=xStart; xv <= xEnd +1e-9; xv += step){
+        const stat = gaussianWeightStats(xv, dev.points, kernelSigma);
+        if(isNaN(stat.mu)){
+            html += `<tr><td>${xv.toFixed(6)}</td><td>--</td><td>--</td><td>--</td></tr>`;
+            continue;
+        }
+        const pct = calcYInTolProb(stat.mu, stat.sigma, targetY, tolerance);
+        html += `<tr>
+        <td>${xv.toFixed(6)}</td>
+        <td>${stat.mu.toFixed(6)}</td>
+        <td>${stat.sigma.toFixed(6)}</td>
+        <td style="${pct>90?"color:green":pct>50?"#cc7700":"red"}">${pct.toFixed(2)}%</td>
+        </tr>`;
+    }
+    html += `</table>
+    <div class="info">说明：概率=多次加工尺寸落在【目标Y±公差】的理论占比，概率越高，稳定良率越好</div>
+    <div class="warn">⚠️概率仅为统计估算；机床机械漂移、热变形不会被模型纳入，上机必须验证。</div>`;
+    tableDiv.innerHTML = html;
+}
+
+// ======================【原有全部函数，完全保留不修改】======================
+function loadStorage(){
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+        deviceList = JSON.parse(raw);
+    }else{
+        deviceList = [
+            {
+                id:"dev_001",
+                name:"设备#1",
+                points:[
+                    {x:0, y:-0.0077},
+                    {x:-0.72, y:0.0078},
+                    {x:-0.36, y:0.0050},
+                    {x:-0.18, y:-0.0020},
+                    {x:-0.207, y:0.0030}
+                ],
+                refParam:{...DEFAULT_REF}
+            }
+        ];
+    }
+    saveStorage();
+}
+
+function saveStorage(){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(deviceList));
+}
+
+function saveCurrentRefParam(){
+    const dev = getActiveDevice();
+    if(!dev) return;
+    dev.refParam = {
+        xStart: parseFloat(document.getElementById("refXStart").value),
+        xEnd: parseFloat(document.getElementById("refXEnd").value),
+        step: parseFloat(document.getElementById("refStep").value)
+    };
+    saveStorage();
+}
+
+function loadRefParamToUI(){
+    const dev = getActiveDevice();
+    if(!dev) return;
+    const rp = dev.refParam || {...DEFAULT_REF};
+    document.getElementById("refXStart").value = rp.xStart;
+    document.getElementById("refXEnd").value = rp.xEnd;
+    document.getElementById("refStep").value = rp.step;
+}
+
+function renderDeviceSelect(){
+    const sel = document.getElementById("deviceSelect");
+    sel.innerHTML = "";
+    deviceList.forEach(dev=>{
+        let opt = document.createElement("option");
+        opt.value = dev.id;
+        opt.innerText = dev.name;
+        sel.appendChild(opt);
+    });
+    if(activeDeviceId){
+        sel.value = activeDeviceId;
+    }
+    sel.onchange = function(){
+        activeDeviceId = this.value;
+        renderTable();
+        refreshFitOrderSelect();
+        refreshLagOrderSelect();
+        loadRefParamToUI();
+        try{doFit();}catch(e){console.error(e);}
+    }
+}
+
+function refreshFitOrderSelect(){
+    const sel = document.getElementById("fitOrderSelect");
+    sel.innerHTML = "";
+    const dev = getActiveDevice();
+    if(!dev) return;
+    const nPoint = dev.points.length;
+    const maxOrder = nPoint - 1;
+    if(maxOrder <1){
+        const opt = document.createElement("option");
+        opt.value = 0;
+        opt.innerText = "测点不足，无法拟合";
+        sel.appendChild(opt);
+        return;
+    }
+    for(let m=1;m<=maxOrder;m++){
+        const opt = document.createElement("option");
+        opt.value = m;
+        let desc = `${m}阶（${m===1?"线性":m===2?"二次":m===3?"三次":m===4?"四次":m+"次"}）`;
+        opt.innerText = desc;
+        sel.appendChild(opt);
+    }
+    const defaultSel = Math.min(2,maxOrder);
+    sel.value = defaultSel;
+    currentFitOrder = defaultSel;
+}
+
+function refreshLagOrderSelect(){
+    const sel = document.getElementById("lagOrderSelect");
+    sel.innerHTML = "";
+    const dev = getActiveDevice();
+    if(!dev) return;
+    const nPoint = dev.points.length;
+    const maxLag = nPoint - 1;
+    if(maxLag <1){
+        const opt = document.createElement("option");
+        opt.value = 0;
+        opt.innerText = "测点不足，无法插值";
+        sel.appendChild(opt);
+        return;
+    }
+    for(let m=1;m<=maxLag;m++){
+        const opt = document.createElement("option");
+        opt.value = m;
+        let desc = `${m}阶（${m===1?"线性":m===2?"二次":m===3?"三次":m===4?"四次":m+"次"}）`;
+        opt.innerText = desc;
+        sel.appendChild(opt);
+    }
+    currentLagOrder = Math.min(4, maxLag);
+    sel.value = currentLagOrder;
+}
+
+function getActiveDevice(){
+    return deviceList.find(d=>d.id === activeDeviceId);
+}
+
+function createNewDevice(){
+    let devName = prompt("输入设备名称：例如：磨床A，主轴2号");
+    if(!devName || devName.trim()==="") return;
+    let newId = "dev_"+Date.now();
+    deviceList.push({
+        id:newId,
+        name:devName.trim(),
+        points:[],
+        refParam:{...DEFAULT_REF}
+    });
+    activeDeviceId = newId;
+    saveStorage();
+    renderDeviceSelect();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    loadRefParamToUI();
+    try{doFit();}catch(e){console.error(e);}
+}
+
+function deleteCurrentDevice(){
+    let dev = getActiveDevice();
+    if(!dev) return;
+    if(!confirm(`确认删除设备【${dev.name}】，所有测点数据会丢失！`)) return;
+    deviceList = deviceList.filter(d=>d.id!==activeDeviceId);
+    if(deviceList.length===0){
+        deviceList.push({id:"dev_"+Date.now(),name:"新设备",points:[],refParam:{...DEFAULT_REF}});
+    }
+    activeDeviceId = deviceList[0].id;
+    saveStorage();
+    renderDeviceSelect();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    loadRefParamToUI();
+    try{doFit();}catch(e){console.error(e);}
+}
+
+function exportDeviceCSV(){
+    let dev = getActiveDevice();
+    if(!dev || dev.points.length===0){alert("当前设备没有测点");return;}
+    let text = "X(mm),Y(mm)\n";
+    dev.points.forEach(p=>{
+        text += `${p.x},${p.y}\n`;
+    });
+    let blob = new Blob([text],{type:"text/csv"});
+    let a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = dev.name+".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function addPoint(){
+    let dev = getActiveDevice();
+    if(!dev) return;
+    let x = parseFloat(document.getElementById('inX').value.trim());
+    let y = parseFloat(document.getElementById('inY').value.trim());
+    if(isNaN(x)||isNaN(y)){alert("请输入有效的数字");return;}
+    dev.points.push({x:x,y:y});
+    document.getElementById('inX').value='';
+    document.getElementById('inY').value='';
+    saveStorage();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    try{doFit();}catch(err){console.error(err);}
+}
+
+function delPoint(idx){
+    let dev = getActiveDevice();
+    if(!dev) return;
+    dev.points.splice(idx,1);
+    saveStorage();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    try{doFit();}catch(err){console.error(err);}
+}
+
+function clearAllPoints(){
+    let dev = getActiveDevice();
+    if(!dev) return;
+    if(!confirm(`确认清空【${dev.name}】全部测点？`)) return;
+    dev.points = [];
+    saveStorage();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    try{doFit();}catch(err){console.error(err);}
+}
+
+function renderTable(){
+    const tb = document.getElementById('dataTable');
+    tb.innerHTML='';
+    let dev = getActiveDevice();
+    if(!dev) return;
+    dev.points.forEach((p,i)=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${i+1}</td><td>${p.x}</td><td>${p.y}</td>
+        <td><button class="del" onclick="delPoint(${i})">删除</button></td>`;
+        tb.appendChild(tr);
+    })
+}
+
+function gauss(A, B){
+    let n = B.length;
+    for(let i=0;i<n;i++){
+        let maxRow=i;
+        for(let r=i;r<n;r++){
+            if(Math.abs(A[r][i])>Math.abs(A[maxRow][i])) maxRow=r;
+        }
+        [A[i],A[maxRow]] = [A[maxRow],A[i]];
+        [B[i],B[maxRow]] = [B[maxRow],B[i]];
+        let div = A[i][i];
+        if(Math.abs(div)<1e-12) return null;
+        for(let c=i;c<n;c++) A[i][c]/=div;
+        B[i]/=div;
+        for(let r=0;r<n;r++){
+            if(r!==i && Math.abs(A[r][i])>1e-12){
+                let fac=A[r][i];
+                for(let c=i;c<n;c++) A[r][c] -= fac*A[i][c];
+                B[r] -= fac*B[i];
+            }
+        }
+    }
+    return B;
+}
+
+function polyFit(pList, m){
+    const N = pList.length;
+    if(N <= m) return null;
+    let A = Array.from({length:m+1}, ()=>Array(m+1).fill(0));
+    let B = Array(m+1).fill(0);
+    for(let i=0;i<=m;i++){
+        for(let j=0;j<=m;j++){
+            let s=0;
+            for(let p of pList) s+= Math.pow(p.x,i+j);
+            A[i][j]=s;
+        }
+        let sb=0;
+        for(let p of pList) sb += Math.pow(p.x,i)*p.y;
+        B[i]=sb;
+    }
+    const sol = gauss(A,B);
+    if(!sol) return null;
+    return sol;
+}
+
+function polyEval(coef, x){
+    let res=0;
+    for(let i=0;i<coef.length;i++){
+        res += coef[i] * Math.pow(x,i);
+    }
+    return res;
+}
+
+function lagrangeEval(points, order, xEval){
+    const usePts = points.slice(0,order+1);
+    let sum=0;
+    for(let i=0;i<usePts.length;i++){
+        let li=1;
+        for(let j=0;j<usePts.length;j++){
+            if(i===j) continue;
+            li *= (xEval-usePts[j].x)/(usePts[i].x-usePts[j].x);
+        }
+        sum += li * usePts[i].y;
+    }
+    return sum;
+}
+
+function doFit(){
+    const infoDiv = document.getElementById("fitInfo");
+    const dev = getActiveDevice();
+    if(!dev || dev.points.length <= currentFitOrder){
+        infoDiv.innerHTML = `<span class="warn">测点不足，无法多项式拟合</span>`;
+        currentFitCoef=null;
+        return;
+    }
+    currentFitCoef = polyFit(dev.points, currentFitOrder);
+    if(!currentFitCoef){
+        infoDiv.innerHTML = `<span class="warn">拟合矩阵奇异，无法求解，请减少阶数或更换测点</span>`;
+        return;
+    }
+    let txt = `<div class="info">✅多项式拟合成功，系数a0+a1*x+a2*x²...</div>`;
+    txt += `<div>系数：[${currentFitCoef.map(v=>v.toFixed(6)).join(", ")}]</div>`;
+    infoDiv.innerHTML = txt;
+}
+
+function calcGivenX(){
+    const resDiv = document.getElementById("evalResult");
+    const dev = getActiveDevice();
+    if(!dev || dev.points.length < 2){
+        resDiv.innerHTML = `<span class="warn">测点不足</span>`;
+        return;
+    }
+    const xv = parseFloat(document.getElementById("evalX").value);
+    if(isNaN(xv)){
+        resDiv.innerHTML = `<span class="warn">请输入有效的X</span>`;
+        return;
+    }
+    const polyY = currentFitCoef ? polyEval(currentFitCoef, xv) : NaN;
+    const lagY = lagrangeEval(dev.points, currentLagOrder, xv);
+    resDiv.innerHTML = `
+    <div>输入X=${xv.toFixed(6)}</div>
+    <div>多项式拟合Y=${polyY.toFixed(6)}</div>
+    <div>${currentLagOrder}阶拉格朗日插值Y=${lagY.toFixed(6)}</div>
+    `;
+}
+
+function solveY0(){
+    const zeroDiv = document.getElementById("zeroResult");
+    const dev = getActiveDevice();
+    if(!dev || !currentFitCoef){
+        zeroDiv.innerHTML = `<span class="warn">需要先完成多项式拟合</span>`;
+        return;
+    }
+    const xs = dev.points.map(p=>p.x);
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    let rootX = NaN;
+    let yPrev = polyEval(currentFitCoef, xMin);
+    const steps=2000;
+    const dx = (xMax-xMin)/steps;
+    for(let i=1;i<=steps;i++){
+        const xCur = xMin + i*dx;
+        const yCur = polyEval(currentFitCoef, xCur);
+        if(yPrev * yCur <= 0){
+            rootX = (xMin + i*dx - dx/2);
+            break;
+        }
+        yPrev = yCur;
+    }
+    if(isNaN(rootX)){
+        zeroDiv.innerHTML = `<span class="warn">在测点区间内没有找到Y=0根</span>`;
+    }else{
+        zeroDiv.innerHTML = `<div class="info">✅零点补偿X=${rootX.toFixed(6)}，Y≈0</div>`;
+    }
+}
+
+//初始化
+window.onload = function(){
+    loadStorage();
+    activeDeviceId = deviceList[0].id;
+    renderDeviceSelect();
+    renderTable();
+    refreshFitOrderSelect();
+    refreshLagOrderSelect();
+    loadRefParamToUI();
+    try{doFit();}catch(e){
+        document.getElementById("fitInfo").innerHTML="<span class='warn'>拟合运算异常："+e.message+"</span>";
+    }
+}
+</script>
+</body>
+</html>
