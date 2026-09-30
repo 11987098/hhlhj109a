@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定计算器｜滑动窗口局部拟合</title>
+<title>磨削接刀标定计算器｜滑动窗口局部线性拟合</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 *{box-sizing:border-box;font-family:system-ui, sans-serif}
@@ -11,22 +11,38 @@ body{max-width:1200px;margin:16px auto;padding:12px;background:#f4f6f8}
 .box{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
 h3{margin-top:0;font-size:16px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
-input,select,textarea{padding:6px;border:1px solid #ccc;border-radius:4px;font-size:14px}
-textarea{width:100%;height:140px;font-family:monospace}
+input,select{padding:6px;border:1px solid #ccc;border-radius:4px;font-size:14px}
 button{padding:7px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer}
 button:hover{background:#1d4ed8}
 canvas{width:100% !important;height:320px !important;margin:8px 0}
-pre{background:#f1f5f9;padding:10px;border-radius:4px;overflow-x:auto;font-size:13px}
+table{border-collapse: collapse;width:100%;font-size:12px;margin:8px 0}
+th,td{border:1px solid #ccc;padding:5px;text-align:center}
+th{background:#edf2f7}
+.table-input td input{width:100%;border:none;background:transparent;text-align:center}
 </style>
 </head>
 <body>
 <div class="box">
-  <h3>1、输入标定数据（X 实测Y，空格/逗号分隔，一行一组）</h3>
-  <textarea id="dataInput" placeholder="示例：
--0.339 0.000392
--0.338 0.000383
--0.337 0.000374"></textarea>
+  <h3>1、标定数据【表格输入】X / Y实测(mm)</h3>
+  <table class="table-input" id="inputTable">
+    <thead>
+      <tr>
+        <th>X</th>
+        <th>Y实测</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><input type="number" step="0.000001"></td><td><input type="number" step="0.000001"></td><td><button onclick="delRow(this)">删除</button></td></tr>
+      <tr><td><input type="number" step="0.000001"></td><td><input type="number" step="0.000001"></td><td><button onclick="delRow(this)">删除</button></td></tr>
+      <tr><td><input type="number" step="0.000001"></td><td><input type="number" step="0.000001"></td><td><button onclick="delRow(this)">删除</button></td></tr>
+    </tbody>
+  </table>
   <div class="row">
+    <button onclick="addRow()">增加一行</button>
+    <button onclick="clearTable()">清空表格</button>
+  </div>
+  <div class="row" style="margin-top:10px;">
     <div>计算模式：
       <select id="calcMode">
         <option value="sliding">✅滑动窗口局部线性拟合【推荐 磨削标定】</option>
@@ -41,6 +57,7 @@ pre{background:#f1f5f9;padding:10px;border-radius:4px;overflow-x:auto;font-size:
       </select>
     </div>
     <div>多项式阶数 <input id="polyOrder" type="number" value="4" min="1" max="12" style="width:50px"></div>
+    <div>插值点数<input id="interpCount" type="number" value="100" min="20" max="500" style="width:60px"></div>
     <button onclick="runCalc()">开始计算</button>
   </div>
 </div>
@@ -56,11 +73,43 @@ pre{background:#f1f5f9;padding:10px;border-radius:4px;overflow-x:auto;font-size:
 </div>
 
 <div class="box">
-  <h3>4、计算结果输出</h3>
-  <pre id="resultOut"></pre>
+  <h3>4、计算结果输出【表格形式】</h3>
+  <div id="resultOut"></div>
 </div>
 
 <script>
+//========表格输入辅助函数========
+function addRow(){
+  const tb = document.querySelector("#inputTable tbody");
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td><input type="number" step="0.000001"></td><td><input type="number" step="0.000001"></td><td><button onclick="delRow(this)">删除</button></td>`;
+  tb.appendChild(tr);
+}
+function delRow(btn){
+  const tr = btn.parentElement.parentElement;
+  const tb = tr.parentElement;
+  if(tb.children.length>1) tr.remove();
+  else alert("至少保留一行");
+}
+function clearTable(){
+  const tb = document.querySelector("#inputTable tbody");
+  tb.innerHTML = `<tr><td><input type="number" step="0.000001"></td><td><input type="number" step="0.000001"></td><td><button onclick="delRow(this)">删除</button></td></tr>`;
+}
+//读取输入表格，转为点数组
+function readTablePoints(){
+  const rows = document.querySelectorAll("#inputTable tbody tr");
+  const pts = [];
+  for(let r of rows){
+    const inputs = r.querySelectorAll("input");
+    const x = parseFloat(inputs[0].value);
+    const y = parseFloat(inputs[1].value);
+    if(!isNaN(x) && !isNaN(y)){
+      pts.push({x,y});
+    }
+  }
+  return pts;
+}
+
 // ========== 工具函数 ==========
 // 最小二乘 一元线性拟合 y = k*x + b
 function linearFit(points){
@@ -125,12 +174,44 @@ function polyEval(coeff, x){
   return y;
 }
 
-//滑动窗口计算
-function slidingCalc(points, winN){
+//滑动窗口【对单个x求值，用于插值预测点】
+function slidingEval(xTarget, rawPoints, winN){
+  const half = Math.floor(winN/2);
+  //找到离xTarget最近的下标
+  let idx=0;
+  for(let i=0; i<rawPoints.length;i++){
+    if(rawPoints[i].x <= xTarget) idx=i;
+  }
+  let start = idx-half;
+  let end = idx+half;
+  if(start<0) start=0;
+  if(end >= rawPoints.length) end = rawPoints.length-1;
+  const winPts = rawPoints.slice(start, end+1);
+  const lb = linearFit(winPts);
+  const yTrend = lb.k * xTarget + lb.b;
+  //窗口内计算局部sigma
+  let sumE2 =0;
+  for(let wp of winPts){
+    const yp = lb.k*wp.x + lb.b;
+    const e = wp.y - yp;
+    sumE2 += e*e;
+  }
+  const sigmaLocal = Math.sqrt(sumE2 / winPts.length);
+  return {
+    yTrend:yTrend,
+    sigmaLocal:sigmaLocal,
+    band1:yTrend+sigmaLocal,
+    band1Neg:yTrend-sigmaLocal,
+    band196:yTrend+sigmaLocal*1.96,
+    band196Neg:yTrend-sigmaLocal*1.96
+  }
+}
+
+// 原始标定测点计算（用于残差）
+function slidingCalcRawPoints(points, winN){
   const out = [];
   const half = Math.floor(winN/2);
   for(let i=0; i<points.length; i++){
-    //窗口范围，自动处理边界
     let start = i-half;
     let end = i+half;
     if(start<0) start=0;
@@ -138,7 +219,6 @@ function slidingCalc(points, winN){
     const winPts = points.slice(start, end+1);
     const lb = linearFit(winPts);
     const yTrend = lb.k * points[i].x + lb.b;
-    //窗口残差计算局部σ
     let sumE2 =0;
     for(let wp of winPts){
       const yp = lb.k*wp.x + lb.b;
@@ -160,6 +240,40 @@ function slidingCalc(points, winN){
     })
   }
   return out;
+}
+
+//生成插值预测点
+function generateInterpolatePoints(rawPoints, count, winN, mode, polyOrder){
+  const xs = rawPoints.map(p=>p.x);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const interpOut = [];
+  const step = (xMax-xMin)/(count-1);
+  for(let k=0;k<count;k++){
+    const x = xMin + k*step;
+    if(mode==="sliding"){
+      const res = slidingEval(x, rawPoints, winN);
+      interpOut.push({x:x, ...res});
+    }else{
+      const coeff = polyFit(rawPoints, polyOrder);
+      const yt = polyEval(coeff, x);
+      //全局sigma
+      let sumE2=0;
+      for(let p of rawPoints){
+        const ye = polyEval(coeff, p.x);
+        sumE2 += Math.pow(p.y - ye, 2);
+      }
+      const sg = Math.sqrt(sumE2/rawPoints.length);
+      interpOut.push({
+        x:x,
+        yTrend:yt,
+        sigmaLocal:sg,
+        band1:yt+sg,band1Neg:yt-sg,
+        band196:yt+sg*1.96,band196Neg:yt-sg*1.96
+      })
+    }
+  }
+  return interpOut;
 }
 
 //全局多项式模式
@@ -197,21 +311,21 @@ function polyCalc(points, order){
 
 //绘图实例
 let chartMain, chartRes;
-function drawMain(data){
+function drawMain(rawData, interpData){
   const ctx = document.getElementById("chartMain").getContext('2d');
   if(chartMain) chartMain.destroy();
   chartMain = new Chart(ctx,{
     type:"line",
     data:{
       datasets:[
-        {label:"实测Y", data:data.map(d=>({x:d.x,y:d.yMeas})), borderColor:"#666",pointRadius:3,showLine:false},
-        {label:"补偿趋势Ytrend", data:data.map(d=>({x:d.x,y:d.yTrend})), borderColor:"#2563eb", borderWidth:2,pointRadius:0},
-        {label:"工艺波动上限 ±1σ", data:data.map(d=>({x:d.x,y:d.band1})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
-        {label:"工艺波动下限 ±1σ", data:data.map(d=>({x:d.x,y:d.band1Neg})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
-        {label:"局部置信上限 ±1.96σ", data:data.map(d=>({x:d.x,y:d.band196})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
-        {label:"局部置信下限 ±1.96σ", data:data.map(d=>({x:d.x,y:d.band196Neg})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
-        {label:"工艺公差 +0.002", data:data.map(d=>({x:d.x,y:0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]},
-        {label:"工艺公差 -0.002", data:data.map(d=>({x:d.x,y:-0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]}
+        {label:"实测Y(标定测点)", data:rawData.map(d=>({x:d.x,y:d.yMeas})), borderColor:"#666",pointRadius:4,showLine:false},
+        {label:"补偿趋势Ytrend【预测插值】", data:interpData.map(d=>({x:d.x,y:d.yTrend})), borderColor:"#2563eb", borderWidth:2,pointRadius:0},
+        {label:"工艺波动上限 ±1σ", data:interpData.map(d=>({x:d.x,y:d.band1})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
+        {label:"工艺波动下限 ±1σ", data:interpData.map(d=>({x:d.x,y:d.band1Neg})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
+        {label:"局部置信上限 ±1.96σ", data:interpData.map(d=>({x:d.x,y:d.band196})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
+        {label:"局部置信下限 ±1.96σ", data:interpData.map(d=>({x:d.x,y:d.band196Neg})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
+        {label:"工艺公差 +0.002", data:interpData.map(d=>({x:d.x,y:0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]},
+        {label:"工艺公差 -0.002", data:interpData.map(d=>({x:d.x,y:-0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]}
       ]
     },
     options:{responsive:true, scales:{x:{type:"linear",title:{text:"X",display:true}},y:{title:{text:"Y(mm)",display:true}}}}
@@ -235,47 +349,64 @@ function drawResidual(data){
 }
 
 function runCalc(){
-  const raw = document.getElementById("dataInput").value.trim();
-  const lines = raw.split("\n").filter(line=>line.trim()!=='');
-  const points = [];
-  for(let line of lines){
-    const num = line.trim().split(/[\s,]+/).map(parseFloat);
-    if(num.length>=2 && !isNaN(num[0]) && !isNaN(num[1])){
-      points.push({x:num[0], y:num[1]});
-    }
-  }
+  const points = readTablePoints();
   if(points.length<3){
-    alert("至少输入3组X Y数据！");
+    alert("至少填写3组有效的X,Y数据！");
     return;
   }
   const mode = document.getElementById("calcMode").value;
-  let resultData;
-  let txt = "";
+  const interpTotal = parseInt(document.getElementById("interpCount").value);
+  let rawResultData;
+  let interpResultData;
   let maxPosRes=-999, maxNegRes=999;
+
   if(mode === "sliding"){
     const win = parseInt(document.getElementById("winSize").value);
-    resultData = slidingCalc(points, win);
-    txt += `===== 滑动窗口局部线性拟合｜窗口${win}点 =====\n`;
+    rawResultData = slidingCalcRawPoints(points, win);
+    interpResultData = generateInterpolatePoints(points, interpTotal, win, "sliding");
   }else{
     const order = parseInt(document.getElementById("polyOrder").value);
     const polyRet = polyCalc(points, order);
-    resultData = polyRet.res;
-    txt += `===== 全局多项式拟合 阶数${order} =====\n全局σ=${polyRet.sigmaG.toFixed(6)} mm\n`;
+    rawResultData = polyRet.res;
+    interpResultData = generateInterpolatePoints(points, interpTotal, 0, "poly", order);
   }
 
   //遍历求残差极值
-  for(let d of resultData){
+  for(let d of rawResultData){
     if(d.residual>maxPosRes) maxPosRes = d.residual;
     if(d.residual<maxNegRes) maxNegRes = d.residual;
   }
-  txt += `最大正残差 = ${maxPosRes.toFixed(6)} mm\n最大负残差 = ${maxNegRes.toFixed(6)} mm\n`;
-  txt += `\n【逐点明细】X | Y实测 | Y补偿趋势 | 残差e | 局部σ_local | 工艺波动区间±1σ | 局部置信区间±1.96σ\n`;
-  for(let d of resultData){
-    txt += `${d.x.toFixed(6)} | ${d.yMeas.toFixed(6)} | ${d.yTrend.toFixed(6)} | ${d.residual.toFixed(6)} | ${d.sigmaLocal.toFixed(6)} | ±${d.sigmaLocal.toFixed(6)} | ±${(d.sigmaLocal*1.96).toFixed(6)}\n`
+
+  //生成HTML结果表格
+  let htmlTxt = `<p>最大正残差 = ${maxPosRes.toFixed(6)} mm<br>最大负残差 = ${maxNegRes.toFixed(6)} mm</p>`;
+  htmlTxt += `<table>
+  <thead>
+    <tr>
+      <th>X</th>
+      <th>Y实测</th>
+      <th>Y补偿趋势</th>
+      <th>残差e</th>
+      <th>局部σ_local</th>
+      <th>工艺波动区间 ±1σ</th>
+      <th>局部置信区间 ±1.96σ</th>
+    </tr>
+  </thead><tbody>`;
+  for(let d of rawResultData){
+    htmlTxt += `<tr>
+    <td>${d.x.toFixed(6)}</td>
+    <td>${d.yMeas.toFixed(6)}</td>
+    <td>${d.yTrend.toFixed(6)}</td>
+    <td>${d.residual.toFixed(6)}</td>
+    <td>${d.sigmaLocal.toFixed(6)}</td>
+    <td>±${d.sigmaLocal.toFixed(6)}</td>
+    <td>±${(d.sigmaLocal*1.96).toFixed(6)}</td>
+    </tr>`;
   }
-  document.getElementById("resultOut").innerText = txt;
-  drawMain(resultData);
-  drawResidual(resultData);
+  htmlTxt += `</tbody></table>`;
+  document.getElementById("resultOut").innerHTML = htmlTxt;
+
+  drawMain(rawResultData, interpResultData);
+  drawResidual(rawResultData);
 }
 </script>
 </body>
