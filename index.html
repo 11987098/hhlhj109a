@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定｜深度集成MC-Dropout神经网络【高精度，支持局部微波动】</title>
+<title>磨削接刀标定｜深度集成MC-Dropout神经网络【手机提速版】</title>
 <style>
 *{box-sizing:border-box;font-family:system-ui}
 body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
@@ -112,7 +112,7 @@ function calcYInTolProb(mu, sigma, targetY, tol){
     return Math.max(0, Math.min(100, prob * 100));
 }
 
-// 单网络：激活函数改为Tanh，L2正则降低
+// 单网络：激活函数改为Tanh，L2正则降低，训练轮次降低适配手机
 class MCDropNet {
     constructor(){
         this.w1 = []; this.b1 = [];
@@ -155,8 +155,8 @@ class MCDropNet {
         for(let i=0;i<l2.length;i++) outN += l2[i] * this.w3[i][0];
         return this.denormY(outN);
     }
-    //训练 L2=0.0001 减弱正则
-    train(points, epochs=12000, lr=0.015){
+    //训练 L2=0.0001，epochs=3500 手机提速
+    train(points, epochs=3500, lr=0.015){
         this.initWeights();
         const xs = points.map(p=>p.x);
         const ys = points.map(p=>p.y);
@@ -213,7 +213,7 @@ class MCDropNet {
             }
         }
     }
-    predictMC(x, sample=40){
+    predictMC(x, sample=20){ // MC采样降低到20，预测提速
         const res=[];
         for(let k=0;k<sample;k++) res.push(this.forward(x));
         const mu = res.reduce((a,b)=>a+b,0)/res.length;
@@ -241,7 +241,7 @@ function trainEnsembleModel(){
     document.getElementById("fitInfo").innerHTML = `<span>正在训练${NET_COUNT}个子网络，请等待...</span>`;
     for(let i=0;i<NET_COUNT;i++){
         const net = new MCDropNet();
-        net.train(pointList, 12000, 0.015);
+        net.train(pointList, 3500, 0.015);
         ensemble.push(net);
     }
     document.getElementById("fitInfo").innerHTML = `<div class="info">✅深度集成MC-Dropout训练完成，子网数量：${NET_COUNT}</div>`;
@@ -251,7 +251,7 @@ function ensemblePredict(x){
     if(!ensemble || ensemble.length===0) return null;
     const netPreds = [];
     for(let net of ensemble){
-        const p = net.predictMC(x,40);
+        const p = net.predictMC(x,20);
         netPreds.push(p);
     }
     const muEns = netPreds.reduce((s,item)=>s+item.mu,0)/netPreds.length;
