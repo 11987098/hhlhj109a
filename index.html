@@ -3,425 +3,280 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定计算器｜测点为置信区间内采样点｜1.96σ</title>
+<title>磨削接刀标定计算器｜滑动窗口局部拟合</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-*{box-sizing:border-box;font-family:system-ui}
-body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
+*{box-sizing:border-box;font-family:system-ui, sans-serif}
+body{max-width:1200px;margin:16px auto;padding:12px;background:#f4f6f8}
 .box{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
 h3{margin-top:0;font-size:16px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
-input{padding:6px 8px;width:180px;border:1px solid #bbb;border-radius:4px;font-size:14px}
-button{padding:6px 12px;border:none;border-radius:4px;background:#2563eb;color:#fff;cursor:pointer;font-size:14px}
-button.del{background:#dc2626}
-button.prob{background:#059669}
-table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}
-th,td{border:1px solid #ccc;padding:6px;text-align:center}
-th{background:#efefef}
-.warn{color:#c00;font-weight:bold}
-.info{color:#036;font-weight:bold}
-.prob-text{color:#087549;font-weight:bold}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+input,select,textarea{padding:6px;border:1px solid #ccc;border-radius:4px;font-size:14px}
+textarea{width:100%;height:140px;font-family:monospace}
+button{padding:7px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer}
+button:hover{background:#1d4ed8}
+canvas{width:100% !important;height:320px !important;margin:8px 0}
+pre{background:#f1f5f9;padding:10px;border-radius:4px;overflow-x:auto;font-size:13px}
 </style>
 </head>
 <body>
 <div class="box">
-<h3>📊 测点录入（测点Y是置信带内采样点，不是均值）</h3>
-<div class="row">
-    <input id="inX" placeholder="补偿X(mm)">
-    <input id="inY" placeholder="实测误差Y(mm)">
-    <button onclick="addPoint()">添加测点</button>
-    <button class="del" onclick="clearAllPoints()">清空测点</button>
-    <button onclick="exportCSV()">导出CSV</button>
-</div>
-<table>
-<thead><tr><th>序号</th><th>X (mm)</th><th>Y (mm)</th><th>删除</th></tr></thead>
-<tbody id="pointTableBody"></tbody>
-</table>
-</div>
-
-<div class="box">
-<h3>⚙️ 参数设置 1.96σ</h3>
-<div class="row">
-    <label>输出Y偏移系数 [-1 ~ +1]：</label>
-    <input id="confOffsetInput" value="0" placeholder="-1~1">
-    <span>输出Y = 均值Ymean + 偏移 ×1.96×全局σ</span>
-</div>
-<div class="row">
-    <button onclick="startTrain()">开始训练（弱正则，保留真实趋势）</button>
-</div>
+  <h3>1、输入标定数据（X 实测Y，空格/逗号分隔，一行一组）</h3>
+  <textarea id="dataInput" placeholder="示例：
+-0.339 0.000392
+-0.338 0.000383
+-0.337 0.000374"></textarea>
+  <div class="row">
+    <div>计算模式：
+      <select id="calcMode">
+        <option value="sliding">✅滑动窗口局部线性拟合【推荐 磨削标定】</option>
+        <option value="poly">多项式拟合（旧全局模式，对比用）</option>
+      </select>
+    </div>
+    <div>滑动窗口点数：
+      <select id="winSize">
+        <option value="3">3点</option>
+        <option value="5" selected>5点（推荐）</option>
+        <option value="7">7点</option>
+      </select>
+    </div>
+    <div>多项式阶数 <input id="polyOrder" type="number" value="4" min="1" max="12" style="width:50px"></div>
+    <button onclick="runCalc()">开始计算</button>
+  </div>
 </div>
 
 <div class="box">
-<h3>🔢 单点预测</h3>
-<div class="row">
-    <input id="evalX" placeholder="输入X">
-    <button onclick="calcGivenX()">计算预测</button>
-</div>
-<div id="evalResult"></div>
-<div class="row" style="margin-top:8px">
-    <button onclick="solveY0()">求解Y均值=0对应的X</button>
-</div>
-<div id="zeroResult"></div>
+  <h3>2、主曲线：补偿趋势 + 波动区间（红线 ±0.002 工艺公差）</h3>
+  <canvas id="chartMain"></canvas>
 </div>
 
 <div class="box">
-<h3>📉 合格概率计算 1.96σ</h3>
-<div class="row">
-    <input id="tolX" placeholder="目标X">
-    <input id="targetY" placeholder="目标Y" value="0">
-    <input id="tolerance" placeholder="±公差mm" value="0.005">
-    <button class="prob" onclick="calcTolProb()">计算合格概率</button>
-</div>
-<div id="probResult"></div>
+  <h3>3、残差散点图（观察有无周期性/残留趋势，接刀缺陷诊断）</h3>
+  <canvas id="chartResidual"></canvas>
 </div>
 
 <div class="box">
-<h3>📋 批量参考表（可直接导出用于机床补偿）</h3>
-<div class="row">
-    <input id="refXStart" placeholder="X起始" value="-0.19">
-    <input id="refXEnd" placeholder="X结束" value="-0.18">
-    <input id="refStep" placeholder="步长mm" value="0.0001">
-    <button onclick="buildRefTable()">生成参考表</button>
-</div>
-<div id="refTableBox"></div>
-</div>
-
-<div class="box">
-<h3>ℹ️ 训练结果｜全局残差</h3>
-<div id="fitInfo"></div>
+  <h3>4、计算结果输出</h3>
+  <pre id="resultOut"></pre>
 </div>
 
 <script>
-const STORAGE_KEY = "grind_calc_points_v4";
-let pointList = [];
-let modelWeights = null;
-let normPara = null;
-let globalSigma = 0;
-let globalMAE = 0;
-const K_FACTOR = 1.96; //固定1.96
-
-//正态分布CDF
-function normCdf(z) {
-    if (z < -8) return 0;
-    if (z > 8) return 1;
-    const a1 = 0.319381530;
-    const a2 = -0.356563782;
-    const a3 = 1.781477937;
-    const a4 = -1.821255978;
-    const a5 = 1.330274429;
-    const p = 0.2316419;
-    const c = 0.39894228;
-    let t = 1.0 / (1.0 + p * Math.abs(z));
-    let poly = t * (a1 + t*(a2 + t*(a3 + t*(a4 + t*a5))));
-    let nd = 1.0 - c * Math.exp(-0.5*z*z) * poly;
-    if(z < 0) nd = 1 - nd;
-    return nd;
-}
-function getZ(mu,sigma,val){
-    return (val - mu)/sigma;
+// ========== 工具函数 ==========
+// 最小二乘 一元线性拟合 y = k*x + b
+function linearFit(points){
+  const n = points.length;
+  let sumX=0,sumY=0,sumXX=0,sumXY=0;
+  for(let p of points){
+    sumX += p.x;
+    sumY += p.y;
+    sumXX += p.x*p.x;
+    sumXY += p.x*p.y;
+  }
+  const det = n*sumXX - sumX*sumX;
+  if(Math.abs(det) < 1e-15){
+    return {k:0, b: sumY/n};
+  }
+  const k = (n*sumXY - sumX*sumY)/det;
+  const b = (sumY*sumXX - sumX*sumXY)/det;
+  return {k,b};
 }
 
-// Worker内部训练代码，弱L2正则，保留真实变化趋势
-const workerCode = `
-function tanh(v){return Math.tanh(v);}
-function trainNet(points){
-    const h1=20,h2=10; //增加神经元，提升拟合能力
-    let w1 = Array.from({length:1},()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
-    let b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
-    let w2 = Array.from({length:h1},()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.8));
-    let b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.2);
-    let w3 = Array.from({length:h2},()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.8));
-    let b3 = [0];
-
-    const xs = points.map(p=>p.x);
-    const ys = points.map(p=>p.y);
-    const xMin = Math.min(...xs);
-    const xMax = Math.max(...xs);
-    const yMin = Math.min(...ys);
-    const yMax = Math.max(...ys);
-    function normX(xRaw){ return 2*(xRaw - xMin)/(xMax-xMin)-1;}
-    function denormY(yNorm){ return (yNorm+1)*(yMax-yMin)/2 + yMin;}
-
-    const epochs = 5000;
-    const lr = 0.007;
-    const L2 = 0.00001; //降低正则强度，不再强行抹平曲线
-    for(let e=0;e<epochs;e++){
-        for(const p of points){
-            const xn = normX(p.x);
-            //前向传播
-            let l1 = w1[0].map((wi,i)=>tanh(xn * wi + b1[i]));
-            let l2 = Array(h2).fill(0);
-            for(let i=0;i<h2;i++){
-                let s=0;
-                for(let j=0;j<h1;j++) s += l1[j] * w2[j][i];
-                l2[i] = tanh(s + b2[i]);
-            }
-            let yN = 0;
-            for(let i=0;i<h2;i++) yN += l2[i] * w3[i][0];
-            yN += b3[0];
-            const yPred = denormY(yN);
-            const err = yPred - p.y;
-
-            //反向传播
-            const dOut = err;
-            const dW3 = l2.map(v=>dOut*v);
-            const dB3 = dOut;
-            const dL2 = w3.map(row=>dOut * row[0]);
-            const dW2 = [];
-            const dB2 = [];
-            for(let i=0;i<h2;i++){
-                const deriv = dL2[i]*(1-l2[i]*l2[i]);
-                dB2.push(deriv);
-                const dwRow = l1.map(v=>deriv*v);
-                dW2.push(dwRow);
-            }
-            const dL1 = Array(h1).fill(0);
-            for(let j=0;j<h1;j++){
-                let sum=0;
-                for(let i=0;i<h2;i++) sum += dW2[i][j] * w2[j][i];
-                dL1[j] = sum*(1-l1[j]*l1[j]);
-            }
-            const dW1 = dL1.map(v=>xn*v);
-            const dB1 = dL1;
-
-            //权重更新+L2正则
-            for(let i=0;i<h1;i++) w1[0][i] -= lr*(dW1[i] + L2*w1[0][i]);
-            for(let i=0;i<h1;i++) b1[i] -= lr*dB1[i];
-            for(let j=0;j<h1;j++){
-                for(let i=0;i<h2;i++) w2[j][i] -= lr*(dW2[i][j]+L2*w2[j][i]);
-            }
-            for(let i=0;i<h2;i++) b2[i] -= lr*dB2[i];
-            for(let i=0;i<h2;i++) w3[i][0] -= lr*(dW3[i]+L2*w3[i][0]);
-            b3[0] -= lr*dB3;
-        }
+// 多项式拟合
+function polyFit(points, order){
+  const n = points.length;
+  const m = order+1;
+  let matA = Array(m).fill(0).map(()=>Array(m).fill(0));
+  let vecB = Array(m).fill(0);
+  for(let p of points){
+    let xpow = Array(m).fill(1);
+    for(let i=1;i<m;i++) xpow[i] = xpow[i-1]*p.x;
+    for(let i=0;i<m;i++){
+      vecB[i] += p.y * xpow[i];
+      for(let j=0;j<m;j++) matA[i][j] += xpow[i]*xpow[j];
     }
-    return {w1,b1,w2,b2,w3,b3,norm:{xMin,xMax,yMin,yMax}};
+  }
+  //高斯消元
+  for(let col=0;col<m;col++){
+    let pivot = col;
+    for(let r=col;r<m;r++) if(Math.abs(matA[r][col])>Math.abs(matA[pivot][col])) pivot=r;
+    [matA[col],matA[pivot]] = [matA[pivot],matA[col]];
+    [vecB[col],vecB[pivot]] = [vecB[pivot],vecB[col]];
+    const div = matA[col][col];
+    if(Math.abs(div)<1e-12) continue;
+    for(let j=col;j<m;j++) matA[col][j]/=div;
+    vecB[col]/=div;
+    for(let r=0;r<m;r++){
+      if(r!==col && matA[r][col]!==0){
+        const factor = matA[r][col];
+        for(let j=col;j<m;j++) matA[r][j] -= factor*matA[col][j];
+        vecB[r] -= factor*vecB[col];
+      }
+    }
+  }
+  return vecB;
 }
-self.onmessage = function(e){
-    const res = trainNet(e.data);
-    self.postMessage(res);
-}`;
-
-function createWorker(){
-    const blob = new Blob([workerCode],{type:"application/javascript"});
-    const url = URL.createObjectURL(blob);
-    return new Worker(url);
+function polyEval(coeff, x){
+  let y=0;
+  let xi=1;
+  for(let c of coeff){
+    y += c*xi;
+    xi *=x;
+  }
+  return y;
 }
 
-//只计算均值Ymean
-function nnPredictMean(xRaw){
-    if(!modelWeights || !normPara) return null;
-    const {w1,b1,w2,b2,w3,b3} = modelWeights;
-    const {xMin,xMax,yMin,yMax} = normPara;
-    function normX(x){ return 2*(x-xMin)/(xMax-xMin)-1; }
-    function denormY(yN){ return (yN+1)*(yMax-yMin)/2 + yMin; }
-    const xn = normX(xRaw);
-    const h1 = w1[0].map((wi,i)=>Math.tanh(xn*wi + b1[i]));
-    const h2 = [];
-    for(let i=0;i<w2[0].length;i++){
-        let s=0;
-        for(let j=0;j<h1.length;j++) s += h1[j]*w2[j][i];
-        h2.push(Math.tanh(s + b2[i]));
+//滑动窗口计算
+function slidingCalc(points, winN){
+  const out = [];
+  const half = Math.floor(winN/2);
+  for(let i=0; i<points.length; i++){
+    //窗口范围，自动处理边界
+    let start = i-half;
+    let end = i+half;
+    if(start<0) start=0;
+    if(end >= points.length) end = points.length-1;
+    const winPts = points.slice(start, end+1);
+    const lb = linearFit(winPts);
+    const yTrend = lb.k * points[i].x + lb.b;
+    //窗口残差计算局部σ
+    let sumE2 =0;
+    for(let wp of winPts){
+      const yp = lb.k*wp.x + lb.b;
+      const e = wp.y - yp;
+      sumE2 += e*e;
     }
-    let yn=0;
-    for(let i=0;i<h2.length;i++) yn += h2[i]*w3[i][0];
-    yn += b3[0];
-    return denormY(yn);
-}
-
-//计算全局残差σ，所有测点（采样点）与均值曲线的残差
-function calcGlobalResidual(){
-    let sumAbs=0;
-    let sumSq=0;
-    for(let p of pointList){
-        const ym = nnPredictMean(p.x);
-        const e = p.y - ym;
-        sumAbs += Math.abs(e);
-        sumSq += e*e;
-    }
-    globalMAE = sumAbs / pointList.length;
-    globalSigma = Math.sqrt(sumSq / pointList.length);
-    document.getElementById("fitInfo").innerHTML = `
-    <div class="info">✅训练完成<br>
-    全局MAE = ${globalMAE.toFixed(6)} mm<br>
-    全局σ = ${globalSigma.toFixed(6)} mm<br>
-    置信带：Ymean ± ${K_FACTOR} × σ  &nbsp;&nbsp;【测点落在这个区间内，测点不是均值】
-    </div>`;
-}
-
-//对外预测，输出【置信带内的Y】不是均值
-function nnPredictOutputY(xRaw, offset){
-    const yMean = nnPredictMean(xRaw);
-    if(yMean === null) return null;
-    const bandHalf = K_FACTOR * globalSigma;
-    const outputY = yMean + offset * bandHalf;
-    return {
-        yMean:yMean,
-        sigma:globalSigma,
-        lower:yMean - bandHalf,
-        upper:yMean + bandHalf,
-        outputY:outputY
-    }
-}
-
-function startTrain(){
-    if(pointList.length < 3){
-        document.getElementById("fitInfo").innerHTML = `<span class="warn">至少3个测点</span>`;
-        return;
-    }
-    document.getElementById("fitInfo").innerText="训练中...";
-    const worker = createWorker();
-    worker.postMessage([...pointList]);
-    worker.onmessage = function(e){
-        modelWeights = e.data;
-        normPara = e.data.norm;
-        calcGlobalResidual();
-        worker.terminate();
-    }
-}
-
-function calcGivenX(){
-    const xv = parseFloat(document.getElementById("evalX").value);
-    const offset = parseFloat(document.getElementById("confOffsetInput").value||0);
-    if(isNaN(xv)){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">请输入X</span>`;
-        return;
-    }
-    const res = nnPredictOutputY(xv, offset);
-    if(!res){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">先训练模型</span>`;
-        return;
-    }
-    document.getElementById("evalResult").innerHTML = `
-    均值Ymean：${res.yMean.toFixed(6)} mm<br>
-    置信区间 [${res.lower.toFixed(6)} ~ ${res.upper.toFixed(6)}] mm<br>
-    👉输出补偿Y（置信带内）：${res.outputY.toFixed(6)} mm
-    `;
-}
-
-//求均值Ymean=0对应的X
-function solveY0(){
-    if(!modelWeights) {document.getElementById("zeroResult").innerHTML="<span class='warn'>请先训练</span>";return;}
-    const xs = pointList.map(p=>p.x);
-    let xL = Math.min(...xs);
-    let xR = Math.max(...xs);
-    for(let iter=0;iter<80;iter++){
-        const xMid = (xL+xR)/2;
-        const yMid = nnPredictMean(xMid);
-        if(yMid>0) xR=xMid;
-        else xL=xMid;
-    }
-    const xZero = (xL+xR)/2;
-    const yZero = nnPredictMean(xZero);
-    document.getElementById("zeroResult").innerHTML = `<div class="info">均值Y=0，X=${xZero.toFixed(6)} mm，此时均值Y=${yZero.toFixed(6)} mm</div>`;
-}
-
-function calcTolProb(){
-    const xv = parseFloat(document.getElementById("tolX").value);
-    const yTarget = parseFloat(document.getElementById("targetY").value);
-    const tol = parseFloat(document.getElementById("tolerance").value);
-    if(isNaN(xv)||isNaN(yTarget)||isNaN(tol)){
-        document.getElementById("probResult").innerHTML = `<span class="warn">填写完整数值</span>`;
-        return;
-    }
-    const res = nnPredictOutputY(xv, 0);
-    if(!res){
-        document.getElementById("probResult").innerHTML = `<span class="warn">先训练</span>`;
-        return;
-    }
-    const low = yTarget - tol;
-    const high = yTarget + tol;
-    const z1 = getZ(res.yMean,res.sigma,low);
-    const z2 = getZ(res.yMean,res.sigma,high);
-    const prob = normCdf(z2)-normCdf(z1);
-    document.getElementById("probResult").innerHTML = `<div class="prob-text">合格概率：${(prob*100).toFixed(2)} %</div>`;
-}
-
-function buildRefTable(){
-    const start = parseFloat(document.getElementById("refXStart").value);
-    const end = parseFloat(document.getElementById("refXEnd").value);
-    const step = parseFloat(document.getElementById("refStep").value);
-    const offset = parseFloat(document.getElementById("confOffsetInput").value||0);
-    if(isNaN(start)||isNaN(end)||isNaN(step)||step<=0){
-        document.getElementById("refTableBox").innerHTML = `<span class="warn">检查起止、步长</span>`;
-        return;
-    }
-    if(!modelWeights){
-        document.getElementById("refTableBox").innerHTML = `<span class="warn">先训练模型</span>`;
-        return;
-    }
-    let html = `<table><tr>
-    <th>X</th><th>均值Ymean</th><th>全局σ</th><th>置信下限</th><th>置信上限</th><th>👉输出补偿Y(置信带内)</th>
-    </tr>`;
-    for(let x=start;x<=end+step/2;x+=step){
-        const r = nnPredictOutputY(x, offset);
-        html += `<tr>
-        <td>${x.toFixed(6)}</td>
-        <td>${r.yMean.toFixed(6)}</td>
-        <td>${r.sigma.toFixed(6)}</td>
-        <td>${r.lower.toFixed(6)}</td>
-        <td>${r.upper.toFixed(6)}</td>
-        <td>${r.outputY.toFixed(6)}</td>
-        </tr>`;
-    }
-    html += `</table>`;
-    document.getElementById("refTableBox").innerHTML = html;
-}
-
-//测点管理
-function renderTable(){
-    const tbody = document.getElementById("pointTableBody");
-    tbody.innerHTML="";
-    pointList.forEach((p,idx)=>{
-        const tr = document.createElement("tr");
-        tr.innerHTML=`
-        <td>${idx+1}</td>
-        <td>${p.x}</td>
-        <td>${p.y}</td>
-        <td><button class="del" onclick="delPoint(${idx})">删除</button></td>`;
-        tbody.appendChild(tr);
+    const sigmaLocal = Math.sqrt(sumE2 / winPts.length);
+    const residual = points[i].y - yTrend;
+    out.push({
+      x: points[i].x,
+      yMeas: points[i].y,
+      yTrend: yTrend,
+      residual: residual,
+      sigmaLocal: sigmaLocal,
+      band1: yTrend + sigmaLocal,
+      band1Neg: yTrend - sigmaLocal,
+      band196: yTrend + sigmaLocal*1.96,
+      band196Neg: yTrend - sigmaLocal*1.96
     })
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(pointList));
+  }
+  return out;
 }
-function addPoint(){
-    const x = parseFloat(document.getElementById("inX").value);
-    const y = parseFloat(document.getElementById("inY").value);
-    if(isNaN(x)||isNaN(y)) return;
-    pointList.push({x,y});
-    renderTable();
-    document.getElementById("inX").value="";
-    document.getElementById("inY").value="";
+
+//全局多项式模式
+function polyCalc(points, order){
+  const coeff = polyFit(points, order);
+  const allRes = [];
+  let sumE2=0;
+  let maxPos=-999, maxNeg=999;
+  for(let p of points){
+    const yt = polyEval(coeff, p.x);
+    const e = p.y - yt;
+    allRes.push(e);
+    sumE2 += e*e;
+    if(e>maxPos) maxPos=e;
+    if(e<maxNeg) maxNeg=e;
+  }
+  const sigmaGlobal = Math.sqrt(sumE2/points.length);
+  const out = [];
+  for(let p of points){
+    const yt = polyEval(coeff, p.x);
+    out.push({
+      x:p.x,
+      yMeas:p.y,
+      yTrend:yt,
+      residual:p.y-yt,
+      sigmaLocal: sigmaGlobal,
+      band1: yt+sigmaGlobal,
+      band1Neg: yt-sigmaGlobal,
+      band196: yt+sigmaGlobal*1.96,
+      band196Neg: yt-sigmaGlobal*1.96
+    })
+  }
+  return {res:out, sigmaG:sigmaGlobal, maxPos, maxNeg, allRes};
 }
-function delPoint(idx){
-    pointList.splice(idx,1);
-    modelWeights=null;
-    globalSigma=0;
-    globalMAE=0;
-    renderTable();
-    document.getElementById("fitInfo").innerText="";
+
+//绘图实例
+let chartMain, chartRes;
+function drawMain(data){
+  const ctx = document.getElementById("chartMain").getContext('2d');
+  if(chartMain) chartMain.destroy();
+  chartMain = new Chart(ctx,{
+    type:"line",
+    data:{
+      datasets:[
+        {label:"实测Y", data:data.map(d=>({x:d.x,y:d.yMeas})), borderColor:"#666",pointRadius:3,showLine:false},
+        {label:"补偿趋势Ytrend", data:data.map(d=>({x:d.x,y:d.yTrend})), borderColor:"#2563eb", borderWidth:2,pointRadius:0},
+        {label:"工艺波动上限 ±1σ", data:data.map(d=>({x:d.x,y:d.band1})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
+        {label:"工艺波动下限 ±1σ", data:data.map(d=>({x:d.x,y:d.band1Neg})), borderColor:"#10b981", borderWidth:1,pointRadius:0},
+        {label:"局部置信上限 ±1.96σ", data:data.map(d=>({x:d.x,y:d.band196})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
+        {label:"局部置信下限 ±1.96σ", data:data.map(d=>({x:d.x,y:d.band196Neg})), borderColor:"#f59e0b", borderWidth:1,pointRadius:0},
+        {label:"工艺公差 +0.002", data:data.map(d=>({x:d.x,y:0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]},
+        {label:"工艺公差 -0.002", data:data.map(d=>({x:d.x,y:-0.002})), borderColor:"#ef4444", borderWidth:1,pointRadius:0,borderDash:[5,5]}
+      ]
+    },
+    options:{responsive:true, scales:{x:{type:"linear",title:{text:"X",display:true}},y:{title:{text:"Y(mm)",display:true}}}}
+  })
 }
-function clearAllPoints(){
-    pointList=[];
-    modelWeights=null;
-    globalSigma=0;
-    globalMAE=0;
-    renderTable();
-    document.getElementById("fitInfo").innerText="";
+function drawResidual(data){
+  const ctx = document.getElementById("chartResidual").getContext('2d');
+  if(chartRes) chartRes.destroy();
+  chartRes = new Chart(ctx,{
+    type:"scatter",
+    data:{
+      datasets:[
+        {label:"残差 e = Y实测-Y趋势", data:data.map(d=>({x:d.x,y:d.residual})), backgroundColor:"#7c3aed", pointRadius:4},
+        {label:"0基准线", data:[{x:data[0].x,y:0},{x:data[data.length-1].x,y:0}], borderColor:"#333",showLine:true,pointRadius:0},
+        {label:"公差±0.002", data:[{x:data[0].x,y:0.002},{x:data[data.length-1].x,y:0.002}], borderColor:"red", borderDash:[4,4],showLine:true,pointRadius:0},
+        {label:"公差-0.002", data:[{x:data[0].x,y:-0.002},{x:data[data.length-1].x,y:-0.002}], borderColor:"red", borderDash:[4,4],showLine:true,pointRadius:0}
+      ]
+    },
+    options:{responsive:true, scales:{x:{type:"linear",title:{text:"X"}},y:{title:{text:"残差(mm)"}}}}
+  })
 }
-function exportCSV(){
-    let csv = "X(mm),Y实测(mm)\n";
-    pointList.forEach(p=>csv += `${p.x},${p.y}\n`);
-    const blob = new Blob([csv],{type:"text/csv"});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download="磨削标定测点.csv";
-    a.click();
+
+function runCalc(){
+  const raw = document.getElementById("dataInput").value.trim();
+  const lines = raw.split("\n").filter(line=>line.trim()!=='');
+  const points = [];
+  for(let line of lines){
+    const num = line.trim().split(/[\s,]+/).map(parseFloat);
+    if(num.length>=2 && !isNaN(num[0]) && !isNaN(num[1])){
+      points.push({x:num[0], y:num[1]});
+    }
+  }
+  if(points.length<3){
+    alert("至少输入3组X Y数据！");
+    return;
+  }
+  const mode = document.getElementById("calcMode").value;
+  let resultData;
+  let txt = "";
+  let maxPosRes=-999, maxNegRes=999;
+  if(mode === "sliding"){
+    const win = parseInt(document.getElementById("winSize").value);
+    resultData = slidingCalc(points, win);
+    txt += `===== 滑动窗口局部线性拟合｜窗口${win}点 =====\n`;
+  }else{
+    const order = parseInt(document.getElementById("polyOrder").value);
+    const polyRet = polyCalc(points, order);
+    resultData = polyRet.res;
+    txt += `===== 全局多项式拟合 阶数${order} =====\n全局σ=${polyRet.sigmaG.toFixed(6)} mm\n`;
+  }
+
+  //遍历求残差极值
+  for(let d of resultData){
+    if(d.residual>maxPosRes) maxPosRes = d.residual;
+    if(d.residual<maxNegRes) maxNegRes = d.residual;
+  }
+  txt += `最大正残差 = ${maxPosRes.toFixed(6)} mm\n最大负残差 = ${maxNegRes.toFixed(6)} mm\n`;
+  txt += `\n【逐点明细】X | Y实测 | Y补偿趋势 | 残差e | 局部σ_local | 工艺波动区间±1σ | 局部置信区间±1.96σ\n`;
+  for(let d of resultData){
+    txt += `${d.x.toFixed(6)} | ${d.yMeas.toFixed(6)} | ${d.yTrend.toFixed(6)} | ${d.residual.toFixed(6)} | ${d.sigmaLocal.toFixed(6)} | ±${d.sigmaLocal.toFixed(6)} | ±${(d.sigmaLocal*1.96).toFixed(6)}\n`
+  }
+  document.getElementById("resultOut").innerText = txt;
+  drawMain(resultData);
+  drawResidual(resultData);
 }
-function loadPoints(){
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if(saved) pointList = JSON.parse(saved);
-    renderTable();
-}
-loadPoints();
 </script>
 </body>
 </html>
