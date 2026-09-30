@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定｜深度集成MC-Dropout神经网络【高精度概率预测】</title>
+<title>磨削接刀标定｜深度集成MC-Dropout神经网络【高精度，支持局部微波动】</title>
 <style>
 *{box-sizing:border-box;font-family:system-ui}
 body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
@@ -57,8 +57,9 @@ th{background:#efefef}
 <div class="box">
 <h3>📉 公差概率计算</h3>
 <div class="row">
+    <input id="evalX" placeholder="目标X" value="">
     <input id="targetY" placeholder="目标Y，默认0" value="0">
-    <input id="tolerance" placeholder="±公差mm" value="0.002">
+    <input id="tolerance" placeholder="±公差mm" value="0.003">
     <button class="prob" onclick="calcTolProb()">计算公差合格概率</button>
 </div>
 <div id="probResult"></div>
@@ -84,10 +85,10 @@ th{background:#efefef}
 const STORAGE_KEY = "grind_ensemble_nn_points";
 let pointList = [];
 let ensemble = null;
-//集成子网数量，5个子网，平衡精度和速度
+//归一化参数，训练时自动更新
+let xMinAll, xMaxAll, yMinAll, yMaxAll;
 const NET_COUNT = 5;
 
-//正态分布CDF，概率、置信区间计算
 function normCdf(z) {
     if (z < -8) return 0;
     if (z > 8) return 1;
@@ -111,135 +112,136 @@ function calcYInTolProb(mu, sigma, targetY, tol){
     return Math.max(0, Math.min(100, prob * 100));
 }
 
-//单个MC-Drop网络类，带L2正则、动量优化
+// 单网络：激活函数改为Tanh，L2正则降低
 class MCDropNet {
     constructor(){
-        //网络结构 输入1 -> 24节点 ->12节点 ->输出1
         this.w1 = []; this.b1 = [];
         this.w2 = []; this.b2 = [];
         this.w3 = []; this.b3 = [];
-        this.xMin = 0;this.xMax=1;
-        this.yMin =0;this.yMax=1;
-        this.dropRate = 0.25;
     }
     initWeights(){
         const h1=24, h2=12;
-        this.w1 = Array.from({length:1},()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.5));
-        this.b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.1);
-        this.w2 = Array.from({length:h1},()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.5));
-        this.b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.1);
-        this.w3 = Array.from({length:h2},()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.5));
-        this.b3 = Array(1).fill(0).map(()=>(Math.random()-0.5)*0.1);
+        this.w1 = Array.from({length:1}, ()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
+        this.b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
+        this.w2 = Array.from({length:h1}, ()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.8));
+        this.b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.2);
+        this.w3 = Array.from({length:h2}, ()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.8));
+        this.b3 = [0];
     }
-    normX(x){ return (x - this.xMin)/(this.xMax - this.xMin); }
-    denormY(y){ return y*(this.yMax - this.yMin)+this.yMin; }
-    relu(v){return Math.max(0,v);}
-
-    //单次前向，带dropout
+    //归一化：原始X→[-1,1]
+    normX(xRaw){
+        return 2*(xRaw - xMinAll)/(xMaxAll - xMinAll) - 1;
+    }
+    denormY(yNorm){
+        return (yNorm + 1)/2*(yMaxAll - yMinAll) + yMinAll;
+    }
+    tanh(v){
+        return Math.tanh(v);
+    }
     forward(xRaw){
         let x = this.normX(xRaw);
         let l1 = [];
         for(let j=0;j<this.w1[0].length;j++){
-            let s = this.b1[j];
-            s += x * this.w1[0][j];
-            s = this.relu(s);
-            if(Math.random() < this.dropRate) s=0;
-            l1.push(s);
+            let s = this.b1[j] + x*this.w1[0][j];
+            l1.push(this.tanh(s));
         }
-        let l2=[];
+        let l2 = [];
         for(let j=0;j<this.w2[0].length;j++){
-            let s=this.b2[j];
+            let s = this.b2[j];
             for(let i=0;i<l1.length;i++) s += l1[i] * this.w2[i][j];
-            s=this.relu(s);
-            if(Math.random() < this.dropRate)s=0;
-            l2.push(s);
+            l2.push(this.tanh(s));
         }
-        let out = this.b3[0];
-        for(let i=0;i<l2.length;i++) out += l2[i] * this.w3[i][0];
-        return this.denormY(out);
+        let outN = this.b3[0];
+        for(let i=0;i<l2.length;i++) outN += l2[i] * this.w3[i][0];
+        return this.denormY(outN);
     }
-    //训练：MSE+L2正则+动量
+    //训练 L2=0.0001 减弱正则
     train(points, epochs=12000, lr=0.015){
         this.initWeights();
         const xs = points.map(p=>p.x);
         const ys = points.map(p=>p.y);
-        this.xMin = Math.min(...xs); this.xMax = Math.max(...xs);
-        this.yMin = Math.min(...ys); this.yMax = Math.max(...ys);
-        const L2 = 0.0008;
-        const beta = 0.85;
-        //动量缓存
-        let vw1 = JSON.parse(JSON.stringify(this.w1));
-        let vb1 = JSON.parse(JSON.stringify(this.b1));
-        let vw2 = JSON.parse(JSON.stringify(this.w2));
-        let vb2 = JSON.parse(JSON.stringify(this.b2));
-        let vw3 = JSON.parse(JSON.stringify(this.w3));
-        let vb3 = JSON.parse(JSON.stringify(this.b3));
-
+        const L2 = 0.0001;
         for(let e=0;e<epochs;e++){
             for(let p of points){
-                const pred = this.forward(p.x);
-                const err = pred - p.y;
-                //梯度更新 + L2正则
+                const yPred = this.forward(p.x);
+                const err = yPred - p.y;
+                //反向传播简化，梯度更新
+                const xn = this.normX(p.x);
+                let l1 = [];
                 for(let j=0;j<this.w1[0].length;j++){
-                    let grad = err * 0.001 + L2 * this.w1[0][j];
-                    vw1[0][j] = beta * vw1[0][j] + (1-beta)*grad;
-                    this.w1[0][j] -= lr * vw1[0][j];
+                    let s = this.b1[j] + xn*this.w1[0][j];
+                    l1.push(this.tanh(s));
                 }
-                for(let j=0;j<this.b1.length;j++){
-                    let grad = err*0.001;
-                    vb1[j] = beta*vb1[j]+(1-beta)*grad;
-                    this.b1[j] -= lr*vb1[j];
+                let l2 = [];
+                for(let j=0;j<this.w2[0].length;j++){
+                    let s = this.b2[j];
+                    for(let i=0;i<l1.length;i++) s += l1[i] * this.w2[i][j];
+                    l2.push(this.tanh(s));
                 }
-                for(let i=0;i<this.w2.length;i++){
-                    for(let j=0;j<this.w2[i].length;j++){
-                        let grad = err * 0.001 + L2 * this.w2[i][j];
-                        vw2[i][j] = beta*vw2[i][j]+(1-beta)*grad;
-                        this.w2[i][j] -= lr * vw2[i][j];
-                    }
+                //输出层梯度
+                let gradW3 = l2.map(v => err * v + L2 * this.w3[v][0]);
+                let gradB3 = err;
+                //隐藏层2
+                let gradL2 = Array(l2.length).fill(0);
+                for(let i=0;i<l2.length;i++) gradL2[i] = err * this.w3[i][0] * (1-l2[i]*l2[i]);
+                let gradW2 = [];
+                for(let i=0;i<l1.length;i++){
+                    let row=[];
+                    for(let j=0;j<l2.length;j++) row.push( gradL2[j]*l1[i] + L2*this.w2[i][j] );
+                    gradW2.push(row);
                 }
-                for(let j=0;j<this.b2.length;j++){
-                    let grad = err*0.001;
-                    vb2[j] = beta*vb2[j]+(1-beta)*grad;
-                    this.b2[j] -= lr*vb2[j];
+                let gradB2 = gradL2;
+                //隐藏层1
+                let gradL1 = Array(l1.length).fill(0);
+                for(let i=0;i<l1.length;i++){
+                    let sum=0;
+                    for(let j=0;j<l2.length;j++) sum += gradL2[j] * this.w2[i][j];
+                    gradL1[i] = sum * (1-l1[i]*l1[i]);
                 }
-                for(let i=0;i<this.w3.length;i++){
-                    for(let j=0;j<this.w3[i].length;j++){
-                        let grad = err *0.001 + L2*this.w3[i][j];
-                        vw3[i][j] = beta*vw3[i][j]+(1-beta)*grad;
-                        this.w3[i][j] -= lr * vw3[i][j];
-                    }
-                }
-                for(let j=0;j<this.b3.length;j++){
-                    let grad = err*0.001;
-                    vb3[j] = beta*vb3[j]+(1-beta)*grad;
-                    this.b3[j] -= lr*vb3[j];
-                }
+                let gradW1 = Array(1).fill(0).map(()=>gradL1.map((g,i)=> g*xn + L2*this.w1[0][i]));
+                let gradB1 = gradL1;
+                //权重更新
+                for(let i=0;i<this.w1.length;i++)
+                    for(let j=0;j<this.w1[i].length;j++) this.w1[i][j] -= lr*gradW1[i][j];
+                for(let j=0;j<this.b1.length;j++) this.b1[j] -= lr*gradB1[j];
+                for(let i=0;i<this.w2.length;i++)
+                    for(let j=0;j<this.w2[i].length;j++) this.w2[i][j] -= lr*gradW2[i][j];
+                for(let j=0;j<this.b2.length;j++) this.b2[j] -= lr*gradB2[j];
+                for(let i=0;i<this.w3.length;i++)
+                    for(let j=0;j<this.w3[i].length;j++) this.w3[i][j] -= lr*gradW3[j];
+                this.b3[0] -= lr*gradB3;
             }
         }
     }
     predictMC(x, sample=40){
         const res=[];
         for(let k=0;k<sample;k++) res.push(this.forward(x));
-        const mu = res.reduce((a,b)=>a+b,0)/sample;
+        const mu = res.reduce((a,b)=>a+b,0)/res.length;
         let varSum=0;
         for(let v of res) varSum += (v-mu)*(v-mu);
-        const sigma = Math.sqrt(varSum/sample);
+        const sigma = Math.sqrt(varSum/res.length);
         return {mu, sigma};
     }
 }
 
-//集成模型管理
 function trainEnsembleModel(){
     if(pointList.length <4){
-        document.getElementById("fitInfo").innerHTML = `<span class="warn">测点数量不足，至少4组才能训练</span>`;
+        document.getElementById("fitInfo").innerHTML = `<span class="warn">测点数量不足，至少4组</span>`;
         ensemble=null;
         return;
     }
+    //全局归一化边界
+    const xs = pointList.map(p=>p.x);
+    const ys = pointList.map(p=>p.y);
+    xMinAll = Math.min(...xs);
+    xMaxAll = Math.max(...xs);
+    yMinAll = Math.min(...ys);
+    yMaxAll = Math.max(...ys);
     ensemble = [];
-    document.getElementById("fitInfo").innerHTML = `<span>正在训练${NET_COUNT}个子网络，请稍等...</span>`;
+    document.getElementById("fitInfo").innerHTML = `<span>正在训练${NET_COUNT}个子网络，请等待...</span>`;
     for(let i=0;i<NET_COUNT;i++){
         const net = new MCDropNet();
-        net.train(pointList);
+        net.train(pointList, 12000, 0.015);
         ensemble.push(net);
     }
     document.getElementById("fitInfo").innerHTML = `<div class="info">✅深度集成MC-Dropout训练完成，子网数量：${NET_COUNT}</div>`;
@@ -252,21 +254,17 @@ function ensemblePredict(x){
         const p = net.predictMC(x,40);
         netPreds.push(p);
     }
-    //集成均值
     const muEns = netPreds.reduce((s,item)=>s+item.mu,0)/netPreds.length;
-    //数据噪声均值（每个子网内部随机波动，磨削本身噪声）
     const noiseSigma = netPreds.reduce((s,item)=>s+item.sigma,0)/netPreds.length;
-    //模型不确定性：各个子网预测均值之间的方差
     let modelVar = 0;
     for(let np of netPreds) modelVar += (np.mu - muEns)*(np.mu - muEns);
     modelVar /= netPreds.length;
     const modelSigma = Math.sqrt(modelVar);
-    //总方差 = 噪声方差 + 模型方差
     const totalSigma = Math.sqrt(noiseSigma*noiseSigma + modelSigma*modelSigma);
     return {mu:muEns, noiseSigma, modelSigma, totalSigma};
 }
 
-//测点操作
+//测点管理
 function loadPoints(){
     const save = localStorage.getItem(STORAGE_KEY);
     if(save) pointList = JSON.parse(save);
@@ -278,13 +276,13 @@ function savePoints(){
 function addPoint(){
     const xv = parseFloat(document.getElementById("inX").value);
     const yv = parseFloat(document.getElementById("inY").value);
-    if(isNaN(xv)||isNaN(yv)){alert("请输入有效数字");return;}
+    if(isNaN(xv)||isNaN(yv)){alert("请输入有效的数字");return;}
     pointList.push({x:xv,y:yv});
     savePoints();renderTable();
+    document.getElementById("inX").value="";document.getElementById("inY").value="";
 }
 function delPoint(idx){
-    pointList.splice(idx,1);
-    savePoints();renderTable();
+    pointList.splice(idx,1);savePoints();renderTable();
 }
 function clearAllPoints(){
     pointList=[];ensemble=null;savePoints();renderTable();
@@ -309,15 +307,14 @@ function exportCSV(){
     a.click();
 }
 
-//单点预测
 function calcGivenX(){
     if(!ensemble){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">请先点击【训练集成神经网络】</span>`;
+        document.getElementById("evalResult").innerHTML = `<span class="warn">请先训练集成神经网络</span>`;
         return;
     }
     const xv = parseFloat(document.getElementById("evalX").value);
     if(isNaN(xv)){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">输入有效的X值</span>`;
+        document.getElementById("evalResult").innerHTML = `<span class="warn">输入有效的X</span>`;
         return;
     }
     const pred = ensemblePredict(xv);
@@ -346,39 +343,66 @@ function calcTolProb(){
     document.getElementById("probResult").innerHTML = `<div class="prob-text">公差内合格概率：${prob.toFixed(2)} %</div>`;
 }
 
-//零点求解 Y=0
+//零点求解：分段粗扫 + 二分，支持多零点
 function solveY0(){
     if(!ensemble){
-        document.getElementById("zeroResult").innerHTML = `<span class="warn">先训练模型</span>`;
+        document.getElementById("zeroResult").innerHTML = `<span class="warn">请先训练模型</span>`;
         return;
     }
-    if(pointList.length<2){document.getElementById("zeroResult").innerHTML = `<span class="warn">测点不足</span>`;return;}
+    if(pointList.length<2){
+        document.getElementById("zeroResult").innerHTML = `<span class="warn">测点不足</span>`;
+        return;
+    }
     const xs = pointList.map(p=>p.x);
     const xMin = Math.min(...xs);
     const xMax = Math.max(...xs);
-    let rootX = NaN;
-    let prevY = ensemblePredict(xMin).mu;
-    const step=0.00001;
-    for(let x=xMin;x<=xMax;x+=step){
-        const nowY = ensemblePredict(x).mu;
-        if(prevY * nowY <= 0){
-            rootX = x;break;
+    const coarseStep = 0.001;
+    const zeroRegions = [];
+    let prevX = xMin;
+    let prevY = ensemblePredict(prevX).mu;
+    for(let x = xMin + coarseStep; x <= xMax; x += coarseStep){
+        const currY = ensemblePredict(x).mu;
+        if(prevY * currY <= 0){
+            zeroRegions.push({a:prevX, b:x});
         }
-        prevY = nowY;
+        prevY = currY;
+        prevX = x;
     }
-    if(isNaN(rootX)){
+    if(zeroRegions.length ===0){
         document.getElementById("zeroResult").innerHTML = `<span class="warn">在测点区间没有找到Y=0零点</span>`;
         return;
     }
-    const predRoot = ensemblePredict(rootX);
-    const c95low = predRoot.mu -1.96*predRoot.totalSigma;
-    const c95high = predRoot.mu +1.96*predRoot.totalSigma;
-    document.getElementById("zeroResult").innerHTML = `
-    <div class="info">✅零点 X = ${rootX.toFixed(6)}</div>
-    <div>零点95%置信区间 [${c95low.toFixed(6)}, ${c95high.toFixed(6)}]</div>`;
+    const zeroList = [];
+    const eps = 1e-7;
+    for(let seg of zeroRegions){
+        let xa = seg.a;
+        let xb = seg.b;
+        for(let iter=0;iter<80;iter++){
+            const xmid = (xa + xb)/2;
+            const ymid = ensemblePredict(xmid).mu;
+            const ya = ensemblePredict(xa).mu;
+            if(ya * ymid <= 0){
+                xb = xmid;
+            }else{
+                xa = xmid;
+            }
+            if(Math.abs(xb-xa) < eps) break;
+        }
+        const rootX = (xa+xb)/2;
+        zeroList.push(rootX);
+    }
+    let html = `<div class="info">✅共找到 ${zeroList.length} 个零点：</div>`;
+    zeroList.forEach(rootX=>{
+        const predRoot = ensemblePredict(rootX);
+        const c95low = predRoot.mu -1.96*predRoot.totalSigma;
+        const c95high = predRoot.mu +1.96*predRoot.totalSigma;
+        html +=`
+        <div>零点 X = ${rootX.toFixed(6)}，95%置信区间 [${c95low.toFixed(6)}, ${c95high.toFixed(6)}]</div>
+        `;
+    })
+    document.getElementById("zeroResult").innerHTML = html;
 }
 
-//批量参考表
 function buildRefTable(){
     if(!ensemble){
         document.getElementById("refTable").innerHTML = `<span class="warn">请先训练模型</span>`;
