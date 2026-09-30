@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定｜神经网络(WebWorker后台) 预测+概率区间</title>
+<title>磨削接刀标定｜神经网络(WebWorker后台) 预测Y+概率区间</title>
 <style>
 *{box-sizing:border-box;font-family:system-ui}
 body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
@@ -104,12 +104,16 @@ function normCdf(z) {
     let nd = 1 - c * Math.exp(-0.5*z*z) * poly;
     return z >= 0 ? nd : 1 - nd;
 }
+//标准化z值
+function getZ(mu,sigma,val){
+    return (val-mu)/sigma;
+}
 
-// 内嵌Worker代码字符串
+// 内嵌Worker代码字符串【修复数组索引BUG】
 const workerCode = `
 function tanh(v){return Math.tanh(v)}
 function trainNet(points){
-    //轻量化网络 1-12-6-1
+    //轻量化网络 1输入 →12隐藏→6隐藏→1输出
     const h1=12, h2=6;
     let w1 = Array.from({length:1}, ()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
     let b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
@@ -131,12 +135,11 @@ function trainNet(points){
     const epochs = 2200;
     const lr = 0.018;
     const L2 = 0.0001;
-    const n = points.length;
 
     for(let e=0;e<epochs;e++){
         for(let p of points){
             const xn = normX(p.x);
-            //前向
+            //前向传播
             let l1 = [];
             for(let j=0;j<h1;j++){
                 const s = b1[j] + xn * w1[0][j];
@@ -154,7 +157,8 @@ function trainNet(points){
             const err = yPred - p.y;
 
             //反向传播
-            const gradW3 = l2.map(v=> err*v + L2 * w3[v][0]);
+            const gradW3 = [];
+            for(let i=0;i<h2;i++) gradW3.push(err * l1[i] + L2 * w3[i][0]);
             const gradB3 = err;
 
             const gradL2 = Array(h2).fill(0);
@@ -174,11 +178,12 @@ function trainNet(points){
                 for(let j=0;j<h2;j++) sum += gradL2[j] * w2[i][j];
                 gradL1[i] = sum * (1-l1[i]*l1[i]);
             }
-            const gradW1 = Array(1).fill(0).map(()=>gradL1.map((g)=> g*xn + L2*w1[0][g]));
+            const gradW1 = [];
+            for(let j=0;j<h1;j++) gradW1.push( gradL1[j] * xn + L2 * w1[0][j] );
             const gradB1 = gradL1;
 
-            //更新权重
-            for(let j=0;j<h1;j++) w1[0][j] -= lr * gradW1[0][j];
+            //权重更新【修复索引错误】
+            for(let j=0;j<h1;j++) w1[0][j] -= lr * gradW1[j];
             for(let j=0;j<h1;j++) b1[j] -= lr * gradB1[j];
             for(let i=0;i<h1;i++){
                 for(let j=0;j<h2;j++) w2[i][j] -= lr*gradW2[i][j];
@@ -223,7 +228,7 @@ function createWorker(){
     }
 }
 
-//预测函数
+//预测函数：输入X，输出预测Y，波动σ
 function nnPredict(xRaw){
     if(!modelWeights || !normPara) return null;
     const {w1,b1,w2,b2,w3,b3} = modelWeights;
@@ -318,7 +323,7 @@ function calcGivenX(){
     const high95 = y +1.96*sigma;
     let html = `
     <div>输入 X = ${xv.toFixed(6)}</div>
-    <div class="info">预测中心值 Y = ${y.toFixed(6)}</div>
+    <div class="info">✅预测目标Y = ${y.toFixed(6)}</div>
     <div>工艺波动标准差 σ = ${sigma.toFixed(6)}</div>
     <div class="prob-text">95%置信区间：[${low95.toFixed(6)} , ${high95.toFixed(6)}]</div>
     `;
@@ -334,12 +339,11 @@ function calcTolProb(){
         document.getElementById("probResult").innerHTML = `<span class="warn">先训练模型</span>`;
         return;
     }
-    const prob = normCdf(targetY+tol, pred.yPred, pred.sigma) - normCdf(targetY-tol, pred.yPred, pred.sigma);
+    const zLow = getZ(pred.yPred, pred.sigma, targetY - tol);
+    const zHigh = getZ(pred.yPred, pred.sigma, targetY + tol);
+    const prob = normCdf(zHigh) - normCdf(zLow);
     const pct = Math.max(0, Math.min(100, prob*100));
     document.getElementById("probResult").innerHTML = `<div class="prob-text">公差合格概率：${pct.toFixed(2)} %</div>`;
-}
-function normCdf(z, mu, sigma){
-    return normCdf( (z-mu)/sigma );
 }
 
 //二分求零点Y=0
@@ -363,7 +367,7 @@ function solveY0(){
     const low95 = predRoot.yPred -1.96*predRoot.sigma;
     const high95 = predRoot.yPred +1.96*predRoot.sigma;
     let html = `<div class="info">✅Y=0零点 X = ${rootX.toFixed(6)}</div>
-    <div>95%置信区间 [${low95.toFixed(6)}, ${high95.toFixed(6)}]</div>`;
+    <div>预测Y=${predRoot.yPred.toFixed(6)}，95%置信区间 [${low95.toFixed(6)}, ${high95.toFixed(6)}]</div>`;
     document.getElementById("zeroResult").innerHTML = html;
 }
 
