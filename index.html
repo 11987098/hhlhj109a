@@ -72,6 +72,8 @@ th{background:#edf2f7}
       </select>
     </div>
     <div>多项式阶数 <input id="polyOrder" type="number" value="4" min="1" max="12" style="width:50px"></div>
+    <div>插值起始X<input id="xStart" type="number" value="-0.72" step="0.000001" style="width:80px"></div>
+    <div>插值终止X<input id="xEnd" type="number" value="0" step="0.000001" style="width:80px"></div>
     <div>插值点数<input id="interpCount" type="number" value="100" min="20" max="500" style="width:60px"></div>
     <button onclick="runCalc()">开始计算</button>
   </div>
@@ -88,8 +90,14 @@ th{background:#edf2f7}
 </div>
 
 <div class="box">
-  <h3>4、计算结果输出【表格形式】</h3>
-  <div id="resultOut"></div>
+  <h3>4、标定测点残差结果</h3>
+  <div id="residualOut"></div>
+</div>
+
+<div class="box">
+  <h3>5、连续插值预测补偿点（可直接复制导入机床补偿表）</h3>
+  <button onclick="copyPredictTable()">复制全部预测点文本</button>
+  <div id="predictOut"></div>
 </div>
 
 <script>
@@ -120,7 +128,7 @@ function loadAllDeviceData(){
       id:"dev1",
       name:"设备1",
       tableRows: [...DEFAULT_INIT_ROWS],
-      setting:{calcMode:"sliding",winSize:"5",polyOrder:"4",interpCount:"100"}
+      setting:{calcMode:"sliding",winSize:"5",polyOrder:"4",interpCount:"100",xStart:-0.72,xEnd:0}
     });
   }
 }
@@ -156,7 +164,7 @@ function addDevice(){
     id:newId,
     name:"设备"+(deviceList.length+1),
     tableRows:[...DEFAULT_INIT_ROWS], //新增设备也默认加载这套标定数据
-    setting:{calcMode:"sliding",winSize:"5",polyOrder:"4",interpCount:"100"}
+    setting:{calcMode:"sliding",winSize:"5",polyOrder:"4",interpCount:"100",xStart:-0.72,xEnd:0}
   };
   deviceList.push(newDev);
   saveAllDeviceData();
@@ -228,6 +236,8 @@ function saveCurrentDeviceForm(){
   dev.setting.winSize = document.getElementById("winSize").value;
   dev.setting.polyOrder = document.getElementById("polyOrder").value;
   dev.setting.interpCount = document.getElementById("interpCount").value;
+  dev.setting.xStart = parseFloat(document.getElementById("xStart").value);
+  dev.setting.xEnd = parseFloat(document.getElementById("xEnd").value);
   saveAllDeviceData();
 }
 //把设备数据加载到页面表单
@@ -238,6 +248,8 @@ function loadDeviceToForm(){
   document.getElementById("winSize").value = dev.setting.winSize;
   document.getElementById("polyOrder").value = dev.setting.polyOrder;
   document.getElementById("interpCount").value = dev.setting.interpCount;
+  document.getElementById("xStart").value = dev.setting.xStart;
+  document.getElementById("xEnd").value = dev.setting.xEnd;
 }
 //读取表格数据为计算点
 function readTablePoints(){
@@ -382,15 +394,12 @@ function slidingCalcRawPoints(points, winN){
   return out;
 }
 
-//生成插值预测点（连续预测曲线核心）
-function generateInterpolatePoints(rawPoints, count, winN, mode, polyOrder){
-  const xs = rawPoints.map(p=>p.x);
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs);
+//==== 【改动核心】使用手动输入的xStart、xEnd生成插值点，不再自动取测点极值 ====
+function generateInterpolatePoints(rawPoints, count, winN, mode, polyOrder, xStart, xEnd){
   const interpOut = [];
-  const step = (xMax-xMin)/(count-1);
+  const step = (xEnd - xStart)/(count-1);
   for(let k=0;k<count;k++){
-    const x = xMin + k*step;
+    const x = xStart + k*step;
     if(mode==="sliding"){
       const res = slidingEval(x, rawPoints, winN);
       interpOut.push({x:x, ...res});
@@ -486,16 +495,28 @@ function drawResidual(data){
   })
 }
 
+//全局保存插值预测数据，用于复制
+let globalInterpData = [];
+
 function runCalc(){
   const points = readTablePoints();
   if(points.length<3){
-    document.getElementById("resultOut").innerHTML = "<p>至少填写3组有效的X,Y标定数据！</p>";
+    document.getElementById("residualOut").innerHTML = "<p>至少填写3组有效的X,Y标定数据！</p>";
+    document.getElementById("predictOut").innerHTML = "";
     if(chartMain) chartMain.destroy();
     if(chartRes) chartRes.destroy();
     return;
   }
   const mode = document.getElementById("calcMode").value;
   const interpTotal = parseInt(document.getElementById("interpCount").value);
+  const xStart = parseFloat(document.getElementById("xStart").value);
+  const xEnd = parseFloat(document.getElementById("xEnd").value);
+
+  if(isNaN(xStart) || isNaN(xEnd) || xStart >= xEnd){
+    alert("插值起始X必须小于终止X！");
+    return;
+  }
+
   let rawResultData;
   let interpResultData;
   let maxPosRes=-999, maxNegRes=999;
@@ -503,13 +524,14 @@ function runCalc(){
   if(mode === "sliding"){
     const win = parseInt(document.getElementById("winSize").value);
     rawResultData = slidingCalcRawPoints(points, win);
-    interpResultData = generateInterpolatePoints(points, interpTotal, win, "sliding");
+    interpResultData = generateInterpolatePoints(points, interpTotal, win, "sliding", 0, xStart, xEnd);
   }else{
     const order = parseInt(document.getElementById("polyOrder").value);
     const polyRet = polyCalc(points, order);
     rawResultData = polyRet.res;
-    interpResultData = generateInterpolatePoints(points, interpTotal, 0, "poly", order);
+    interpResultData = generateInterpolatePoints(points, interpTotal, 0, "poly", order, xStart, xEnd);
   }
+  globalInterpData = interpResultData;
 
   //遍历求残差极值
   for(let d of rawResultData){
@@ -517,9 +539,9 @@ function runCalc(){
     if(d.residual<maxNegRes) maxNegRes = d.residual;
   }
 
-  //生成HTML结果表格
-  let htmlTxt = `<p>最大正残差 = ${maxPosRes.toFixed(6)} mm<br>最大负残差 = ${maxNegRes.toFixed(6)} mm</p>`;
-  htmlTxt += `<table>
+  //==== 模块1：标定测点残差结果表（原有）====
+  let htmlRes = `<p>最大正残差 = ${maxPosRes.toFixed(6)} mm<br>最大负残差 = ${maxNegRes.toFixed(6)} mm</p>`;
+  htmlRes += `<table>
   <thead>
     <tr>
       <th>X</th>
@@ -532,7 +554,7 @@ function runCalc(){
     </tr>
   </thead><tbody>`;
   for(let d of rawResultData){
-    htmlTxt += `<tr>
+    htmlRes += `<tr>
     <td>${d.x.toFixed(6)}</td>
     <td>${d.yMeas.toFixed(6)}</td>
     <td>${d.yTrend.toFixed(6)}</td>
@@ -542,11 +564,45 @@ function runCalc(){
     <td>±${(d.sigmaLocal*1.96).toFixed(6)}</td>
     </tr>`;
   }
-  htmlTxt += `</tbody></table>`;
-  document.getElementById("resultOut").innerHTML = htmlTxt;
+  htmlRes += `</tbody></table>`;
+  document.getElementById("residualOut").innerHTML = htmlRes;
+
+  //==== 模块2：新增【连续插值预测补偿点表格】====
+  let htmlPredict = `<table>
+  <thead>
+    <tr>
+      <th>X坐标</th>
+      <th>预测补偿Y值</th>
+      <th>±1σ上限</th>
+      <th>±1σ下限</th>
+    </tr>
+  </thead><tbody>`;
+  for(let d of interpResultData){
+    htmlPredict += `<tr>
+    <td>${d.x.toFixed(6)}</td>
+    <td>${d.yTrend.toFixed(6)}</td>
+    <td>${d.band1.toFixed(6)}</td>
+    <td>${d.band1Neg.toFixed(6)}</td>
+    </tr>`;
+  }
+  htmlPredict += `</tbody></table>`;
+  document.getElementById("predictOut").innerHTML = htmlPredict;
 
   drawMain(rawResultData, interpResultData);
   drawResidual(rawResultData);
+}
+
+//复制预测点文本（制表符分割，粘贴Excel/机床）
+function copyPredictTable(){
+  let txt = "X\tY补偿预测值\tSigma上限\tSigma下限\n";
+  for(let d of globalInterpData){
+    txt += `${d.x.toFixed(6)}\t${d.yTrend.toFixed(6)}\t${d.band1.toFixed(6)}\t${d.band1Neg.toFixed(6)}\n`;
+  }
+  navigator.clipboard.writeText(txt).then(()=>{
+    alert("✅ 预测补偿点已复制！直接粘贴到Excel或者西门子补偿表");
+  }).catch(err=>{
+    alert("复制失败，请手动复制表格");
+  })
 }
 
 //页面初始化
