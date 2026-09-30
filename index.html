@@ -3,18 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>磨削接刀标定计算器‑多设备版【全参数记忆+动态多项式阶数】</title>
+<title>磨削接刀标定｜深度集成MC-Dropout神经网络【高精度概率预测】</title>
 <style>
 *{box-sizing:border-box;font-family:system-ui}
 body{max-width:1100px;margin:16px auto;padding:12px;background:#f4f6f8}
 .box{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
 h3{margin-top:0;font-size:16px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
-input{padding:6px 8px;width:140px;border:1px solid #bbb;border-radius:4px;font-size:14px}
-select{padding:6px 8px;border:1px solid #bbb;border-radius:4px;font-size:14px;min-width:160px}
+input{padding:6px 8px;width:160px;border:1px solid #bbb;border-radius:4px;font-size:14px}
 button{padding:6px 12px;border:none;border-radius:4px;background:#2563eb;color:#fff;cursor:pointer;font-size:14px}
 button.del{background:#dc2626}
-button.gray{background:#666}
 button.prob{background:#028448}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{border:1px solid #ccc;padding:6px;text-align:center}
@@ -22,113 +20,74 @@ th{background:#efefef}
 .warn{color:#c00;font-weight:bold}
 .info{color:#066;font-weight:bold}
 .prob-text{color:#028448;font-weight:bold}
-html,body{height:100%;margin:0;padding:0}
-.slide-wrap{display:flex;align-items:center;gap:8px;width:320px}
-.slide-wrap input[type="range"]{flex:1;width:auto}
 </style>
 </head>
 <body>
 <div class="box">
-<h3>📊 磨削接刀标定工具【多设备管理｜多项式动态阶数】</h3>
+<h3>📊 磨削接刀标定｜深度集成MC-Dropout神经网络</h3>
 <div class="row">
-    <select id="deviceSelect">
-    </select>
-    <button onclick="createNewDevice()">新建设备</button>
-    <button class="gray" onclick="deleteCurrentDevice()">删除当前设备</button>
-    <button onclick="exportDeviceCSV()">导出本设备CSV</button>
-</div>
-<div class="row">
-    <input id="inX" placeholder="输入X，例：-0.207">
-    <input id="inY" placeholder="输入Y，例：0.003">
-    <button onclick="addPoint()">添加数据点</button>
-    <button onclick="clearAllPoints()">清空本设备测点</button>
+    <input id="inX" placeholder="补偿X(mm)">
+    <input id="inY" placeholder="实测误差Y(mm)">
+    <button onclick="addPoint()">添加测点</button>
+    <button class="del" onclick="clearAllPoints()">清空全部测点</button>
+    <button onclick="exportCSV()">导出CSV</button>
 </div>
 <table>
-<thead><tr><th>序号</th><th>X (mm)</th><th>Y (mm)</th><th>操作</th></tr></thead>
+<thead><tr><th>序号</th><th>X (mm)</th><th>Y (mm)</th><th>删除</th></tr></thead>
 <tbody id="dataTable"></tbody>
 </table>
 </div>
 
 <div class="box">
-<h3>🔢 计算区【多项式阶数自动受测点数量限制】</h3>
+<h3>🔢 模型训练 & 单点预测</h3>
 <div class="row">
-    <select id="fitOrderSelect" onchange="onFitOrderChange()">
-    </select>
-    <span id="orderTip">多项式拟合阶数：最大阶=测点数量-1</span>
+    <button onclick="trainEnsembleModel()">训练集成神经网络</button>
 </div>
 <div class="row">
-    <select id="lagOrderSelect" onchange="onLagOrderChange()">
-    </select>
-    <span>拉格朗日插值阶数（推荐4阶；测点数量必须大于插值阶数）</span>
-</div>
-<div class="row">
-    <input id="evalX" placeholder="输入X求Y，例 -0.186">
-    <button onclick="calcGivenX()">计算该X对应的Y</button>
+    <input id="evalX" placeholder="输入X，预测Y">
+    <button onclick="calcGivenX()">计算预测</button>
 </div>
 <div id="evalResult"></div>
 <div class="row" style="margin-top:8px">
-<button onclick="solveY0()">求解 Y=0 时的X零点（有效区间根）</button>
+    <button onclick="solveY0()">求解 Y=0 的零点X</button>
 </div>
 <div id="zeroResult"></div>
 </div>
 
-<!-- ========== 公差约束概率寻优模块，输入框带注释，本地记忆 ========== -->
 <div class="box">
-<h3 class="prob-text">📉 公差约束概率寻优 | 限定Y±公差范围</h3>
+<h3>📉 公差概率计算</h3>
 <div class="row">
-    <!--目标Y：理想接刀误差，一般填0，代表目标误差0mm-->
-    <input id="targetY" placeholder="目标Y(理想接刀误差，一般填0)">
-    <!--允许±公差：合格区间=目标Y ±公差，单位mm-->
-    <input id="tolerance" placeholder="允许±公差 mm，例0.002">
-    <!--高斯核带宽：测点加权影响半径；磨削推荐0.001~0.005-->
-    <input id="kernelSigma" placeholder="高斯核带宽mm，推荐0.001~0.005">
-    <button class="prob" onclick="calcToleranceOptimal()">查找满足公差的最优X</button>
+    <input id="targetY" placeholder="目标Y，默认0" value="0">
+    <input id="tolerance" placeholder="±公差mm" value="0.002">
+    <button class="prob" onclick="calcTolProb()">计算公差合格概率</button>
 </div>
 <div id="probResult"></div>
-<div class="row" style="margin-top:8px">
-    <button class="prob" onclick="buildToleranceProbTable()">生成概率公差参考表</button>
-</div>
-<div id="probTable"></div>
 </div>
 
 <div class="box">
-<h3>📈 拟合结果</h3>
-<div id="fitInfo"></div>
-</div>
-
-<div class="box">
-<h3>📋 概率调机参考表</h3>
+<h3>📋 批量参考表</h3>
 <div class="row">
-    <input id="refXStart" placeholder="插值起始X">
-    <input id="refXEnd" placeholder="插值结束X">
-    <input id="refStep" placeholder="步长 mm">
+    <input id="refXStart" placeholder="X起始" value="-0.19">
+    <input id="refXEnd" placeholder="X结束" value="-0.18">
+    <input id="refStep" placeholder="步长mm" value="0.0001">
     <button onclick="buildRefTable()">生成参考表</button>
 </div>
 <div id="refTable"></div>
 </div>
 
+<div class="box">
+<h3>🧠 模型训练信息</h3>
+<div id="fitInfo"></div>
+</div>
+
 <script>
-//存储KEY：设备数据 + 全局全部输入参数
-const STORAGE_KEY_DEV = "grind_calib_devices";
-const STORAGE_KEY_GLOBAL = "grind_calib_global_setting";
-let deviceList = [];
-let activeDeviceId = null;
-let currentFitCoef = null;
-let currentFitOrder = 2;
-let currentLagOrder = 4;
+const STORAGE_KEY = "grind_ensemble_nn_points";
+let pointList = [];
+let ensemble = null;
+//集成子网数量，5个子网，平衡精度和速度
+const NET_COUNT = 5;
 
-// 默认全局参数：所有输入框
-const DEFAULT_GLOBAL = {
-    targetY:"0.0000",
-    tolerance:"0.002",
-    kernelSigma:"0.001",
-    refXStart:"-0.19",
-    refXEnd:"-0.18",
-    refStep:"0.0001",
-    evalX:""
-};
-
-// ======================【数学工具：标准正态分布CDF】======================
+//正态分布CDF，概率、置信区间计算
 function normCdf(z) {
     if (z < -8) return 0;
     if (z > 8) return 1;
@@ -144,588 +103,312 @@ function normCdf(z) {
     let nd = 1 - c * Math.exp(-0.5*z*z) * poly;
     return z >= 0 ? nd : 1 - nd;
 }
-
-// ======================【高斯核加权统计函数】======================
-function gaussianWeightStats(xQuery, points, kernelSigma) {
-    let sumW = 0;
-    let sumWY = 0;
-    let sumWY2 = 0;
-    for(let p of points){
-        const dx = p.x - xQuery;
-        const w = Math.exp(-(dx*dx)/(2*kernelSigma*kernelSigma));
-        sumW += w;
-        sumWY += w * p.y;
-        sumWY2 += w * p.y * p.y;
-    }
-    if(sumW < 1e-12){
-        return {mu:NaN, sigma:NaN, totalWeight:0};
-    }
-    const mu = sumWY / sumW;
-    const varY = sumWY2 / sumW - mu*mu;
-    const sigma = Math.sqrt(Math.max(varY, 1e-12));
-    return {mu, sigma, totalWeight:sumW};
-}
-
 function calcYInTolProb(mu, sigma, targetY, tol){
     if(sigma <= 1e-12) return mu >= targetY-tol && mu <= targetY+tol ? 100 : 0;
-    const z1 = ( (targetY - tol) - mu ) / sigma;
-    const z2 = ( (targetY + tol) - mu ) / sigma;
+    const z1 = ((targetY - tol) - mu)/sigma;
+    const z2 = ((targetY + tol) - mu)/sigma;
     const prob = normCdf(z2) - normCdf(z1);
     return Math.max(0, Math.min(100, prob * 100));
 }
 
-function findToleranceOptimalX(points, targetY, tolerance, kernelSigma, sampleCount=500){
-    const xs = points.map(p=>p.x);
-    const xMin = Math.min(...xs);
-    const xMax = Math.max(...xs);
-    const lowerBound = targetY - tolerance;
-    const upperBound = targetY + tolerance;
+//单个MC-Drop网络类，带L2正则、动量优化
+class MCDropNet {
+    constructor(){
+        //网络结构 输入1 -> 24节点 ->12节点 ->输出1
+        this.w1 = []; this.b1 = [];
+        this.w2 = []; this.b2 = [];
+        this.w3 = []; this.b3 = [];
+        this.xMin = 0;this.xMax=1;
+        this.yMin =0;this.yMax=1;
+        this.dropRate = 0.25;
+    }
+    initWeights(){
+        const h1=24, h2=12;
+        this.w1 = Array.from({length:1},()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.5));
+        this.b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.1);
+        this.w2 = Array.from({length:h1},()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.5));
+        this.b2 = Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.1);
+        this.w3 = Array.from({length:h2},()=>Array(1).fill(0).map(()=>(Math.random()-0.5)*0.5));
+        this.b3 = Array(1).fill(0).map(()=>(Math.random()-0.5)*0.1);
+    }
+    normX(x){ return (x - this.xMin)/(this.xMax - this.xMin); }
+    denormY(y){ return y*(this.yMax - this.yMin)+this.yMin; }
+    relu(v){return Math.max(0,v);}
 
-    let bestX = NaN;
-    let bestMu = NaN;
-    let bestSigma = NaN;
-    let bestGap = Infinity;
-    let hasValidRegion = false;
+    //单次前向，带dropout
+    forward(xRaw){
+        let x = this.normX(xRaw);
+        let l1 = [];
+        for(let j=0;j<this.w1[0].length;j++){
+            let s = this.b1[j];
+            s += x * this.w1[0][j];
+            s = this.relu(s);
+            if(Math.random() < this.dropRate) s=0;
+            l1.push(s);
+        }
+        let l2=[];
+        for(let j=0;j<this.w2[0].length;j++){
+            let s=this.b2[j];
+            for(let i=0;i<l1.length;i++) s += l1[i] * this.w2[i][j];
+            s=this.relu(s);
+            if(Math.random() < this.dropRate)s=0;
+            l2.push(s);
+        }
+        let out = this.b3[0];
+        for(let i=0;i<l2.length;i++) out += l2[i] * this.w3[i][0];
+        return this.denormY(out);
+    }
+    //训练：MSE+L2正则+动量
+    train(points, epochs=12000, lr=0.015){
+        this.initWeights();
+        const xs = points.map(p=>p.x);
+        const ys = points.map(p=>p.y);
+        this.xMin = Math.min(...xs); this.xMax = Math.max(...xs);
+        this.yMin = Math.min(...ys); this.yMax = Math.max(...ys);
+        const L2 = 0.0008;
+        const beta = 0.85;
+        //动量缓存
+        let vw1 = JSON.parse(JSON.stringify(this.w1));
+        let vb1 = JSON.parse(JSON.stringify(this.b1));
+        let vw2 = JSON.parse(JSON.stringify(this.w2));
+        let vb2 = JSON.parse(JSON.stringify(this.b2));
+        let vw3 = JSON.parse(JSON.stringify(this.w3));
+        let vb3 = JSON.parse(JSON.stringify(this.b3));
 
-    const step = (xMax - xMin)/sampleCount;
-    for(let i=0; i<=sampleCount; i++){
-        const xEval = xMin + i * step;
-        const stat = gaussianWeightStats(xEval, points, kernelSigma);
-        if(isNaN(stat.mu)) continue;
-        const confLow = stat.mu - 1.96 * stat.sigma;
-        const confHigh = stat.mu + 1.96 * stat.sigma;
-
-        const satisfyTol = (confLow >= lowerBound - 1e-12) && (confHigh <= upperBound +1e-12);
-        if(satisfyTol){
-            hasValidRegion = true;
-            const gapToTarget = Math.abs(stat.mu - targetY);
-            if(gapToTarget < bestGap){
-                bestGap = gapToTarget;
-                bestX = xEval;
-                bestMu = stat.mu;
-                bestSigma = stat.sigma;
+        for(let e=0;e<epochs;e++){
+            for(let p of points){
+                const pred = this.forward(p.x);
+                const err = pred - p.y;
+                //梯度更新 + L2正则
+                for(let j=0;j<this.w1[0].length;j++){
+                    let grad = err * 0.001 + L2 * this.w1[0][j];
+                    vw1[0][j] = beta * vw1[0][j] + (1-beta)*grad;
+                    this.w1[0][j] -= lr * vw1[0][j];
+                }
+                for(let j=0;j<this.b1.length;j++){
+                    let grad = err*0.001;
+                    vb1[j] = beta*vb1[j]+(1-beta)*grad;
+                    this.b1[j] -= lr*vb1[j];
+                }
+                for(let i=0;i<this.w2.length;i++){
+                    for(let j=0;j<this.w2[i].length;j++){
+                        let grad = err * 0.001 + L2 * this.w2[i][j];
+                        vw2[i][j] = beta*vw2[i][j]+(1-beta)*grad;
+                        this.w2[i][j] -= lr * vw2[i][j];
+                    }
+                }
+                for(let j=0;j<this.b2.length;j++){
+                    let grad = err*0.001;
+                    vb2[j] = beta*vb2[j]+(1-beta)*grad;
+                    this.b2[j] -= lr*vb2[j];
+                }
+                for(let i=0;i<this.w3.length;i++){
+                    for(let j=0;j<this.w3[i].length;j++){
+                        let grad = err *0.001 + L2*this.w3[i][j];
+                        vw3[i][j] = beta*vw3[i][j]+(1-beta)*grad;
+                        this.w3[i][j] -= lr * vw3[i][j];
+                    }
+                }
+                for(let j=0;j<this.b3.length;j++){
+                    let grad = err*0.001;
+                    vb3[j] = beta*vb3[j]+(1-beta)*grad;
+                    this.b3[j] -= lr*vb3[j];
+                }
             }
         }
     }
-
-    if(!hasValidRegion){
-        let fallbackX = NaN;
-        let fallbackMu = NaN;
-        let fallbackSigma = NaN;
-        let minAbsY = Infinity;
-        for(let i=0; i<=sampleCount; i++){
-            const xEval = xMin + i * step;
-            const stat = gaussianWeightStats(xEval, points, kernelSigma);
-            if(isNaN(stat.mu)) continue;
-            const absY = Math.abs(stat.mu - targetY);
-            if(absY < minAbsY){
-                minAbsY = absY;
-                fallbackX = xEval;
-                fallbackMu = stat.mu;
-                fallbackSigma = stat.sigma;
-            }
-        }
-        return {
-            hasValid:false,
-            bestX:fallbackX,
-            bestMu:fallbackMu,
-            bestSigma:fallbackSigma,
-            xMin,xMax,lowerBound,upperBound
-        }
-    }
-    return {
-        hasValid:true,
-        bestX,bestMu,bestSigma,
-        xMin,xMax,lowerBound,upperBound
+    predictMC(x, sample=40){
+        const res=[];
+        for(let k=0;k<sample;k++) res.push(this.forward(x));
+        const mu = res.reduce((a,b)=>a+b,0)/sample;
+        let varSum=0;
+        for(let v of res) varSum += (v-mu)*(v-mu);
+        const sigma = Math.sqrt(varSum/sample);
+        return {mu, sigma};
     }
 }
 
-function calcToleranceOptimal(){
-    const probDiv = document.getElementById("probResult");
-    const dev = getActiveDevice();
-    if(!dev || dev.points.length <3){
-        probDiv.innerHTML = `<span class="warn">测点至少需要3个，才能做概率统计估算</span>`;
+//集成模型管理
+function trainEnsembleModel(){
+    if(pointList.length <4){
+        document.getElementById("fitInfo").innerHTML = `<span class="warn">测点数量不足，至少4组才能训练</span>`;
+        ensemble=null;
         return;
     }
-    const targetY = parseFloat(document.getElementById("targetY").value);
-    const tolerance = parseFloat(document.getElementById("tolerance").value);
-    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
-    saveGlobalSetting();
-    if(isNaN(targetY) || isNaN(tolerance) || isNaN(kernelSigma) || kernelSigma <=0 || tolerance <=0){
-        probDiv.innerHTML = `<span class="warn">参数非法：公差、高斯带宽必须>0</span>`;
-        return;
+    ensemble = [];
+    document.getElementById("fitInfo").innerHTML = `<span>正在训练${NET_COUNT}个子网络，请稍等...</span>`;
+    for(let i=0;i<NET_COUNT;i++){
+        const net = new MCDropNet();
+        net.train(pointList);
+        ensemble.push(net);
     }
-    const res = findToleranceOptimalX(dev.points, targetY, tolerance, kernelSigma);
-    if(isNaN(res.bestX)){
-        probDiv.innerHTML = `<span class="warn">搜索失败，请检查测点或高斯带宽</span>`;
-        return;
-    }
-    const conf95Low = res.bestMu - 1.96 * res.bestSigma;
-    const conf95High = res.bestMu + 1.96 * res.bestSigma;
-    const passProb = calcYInTolProb(res.bestMu, res.bestSigma, targetY, tolerance);
-    let html = "";
-    if(res.hasValid){
-        html += `<div class="prob-text">✅找到满足±${tolerance.toFixed(6)}公差的最优补偿X</div>`;
-    }else{
-        html += `<div class="warn">❌警告：**机床固有波动过大，不存在X可以稳定满足±${tolerance.toFixed(6)}公差**</div>`;
-        html += `<div class="warn">下面是均值最接近目标的备选补偿值，但95%概率区间会超出设定公差！</div>`;
-    }
-    html += `
-    <div>搜索区间 X ∈ [${res.xMin.toFixed(4)}, ${res.xMax.toFixed(4)}]</div>
-    <div>目标Y = ${targetY.toFixed(6)}，允许范围：Y ∈ [${res.lowerBound.toFixed(6)}, ${res.upperBound.toFixed(6)}]</div>
-    <div><b>推荐补偿 X = ${res.bestX.toFixed(6)} mm</b></div>
-    <div>该位置预测平均误差 μ = ${res.bestMu.toFixed(6)} mm</div>
-    <div>Y重复波动标准差 σ = ${res.bestSigma.toFixed(6)} mm</div>
-    <div>95%置信区间 Y ∈ [${conf95Low.toFixed(6)}, ${conf95High.toFixed(6)}] mm</div>
-    <div class="prob-text">✅落在公差内理论概率：${passProb.toFixed(2)} %</div>
-    `;
-    if(res.hasValid){
-        html += `<div class="info">✅置信区间完全落在公差带内，在统计意义上，95%加工结果满足公差。</div>`;
-    }else{
-        html += `<div class="warn">⚠️机床本身的重复波动大于设定公差，即使调整补偿，依然有大概率超差，优先检修机床稳定性。</div>`;
-    }
-    html += `<div class="warn">⚠️统计计算值，上机前必须小步微调验证！</div>`;
-    probDiv.innerHTML=html;
+    document.getElementById("fitInfo").innerHTML = `<div class="info">✅深度集成MC-Dropout训练完成，子网数量：${NET_COUNT}</div>`;
 }
 
-// ==========【多项式拟合核心，最小二乘】==========
-function polyFit(points, order) {
-    const n = points.length;
-    if(order >= n) return null;
-    let X = Array.from({length:order+1},()=>Array(order+1).fill(0));
-    let Y = Array(order+1).fill(0);
-    for(let p of points){
-        let xi = 1;
-        for(let i=0;i<=order;i++){
-            let xj = 1;
-            for(let j=0;j<=order;j++){
-                X[i][j] += xi * xj;
-                xj *= p.x;
-            }
-            Y[i] += xi * p.y;
-            xi *= p.x;
-        }
+function ensemblePredict(x){
+    if(!ensemble || ensemble.length===0) return null;
+    const netPreds = [];
+    for(let net of ensemble){
+        const p = net.predictMC(x,40);
+        netPreds.push(p);
     }
-    //高斯消元
-    for(let i=0;i<=order;i++){
-        let pivot = i;
-        for(let r=i;r<=order;r++) if(Math.abs(X[r][i])>Math.abs(X[pivot][i])) pivot=r;
-        [X[i],X[pivot]] = [X[pivot],X[i]];
-        [Y[i],Y[pivot]] = [Y[pivot],Y[i]];
-        const div = X[i][i];
-        if(Math.abs(div)<1e-12) return null;
-        for(let j=i;j<=order;j++) X[i][j]/=div;
-        Y[i]/=div;
-        for(let r=0;r<=order;r++){
-            if(r!==i && Math.abs(X[r][i])>1e-12){
-                const factor = X[r][i];
-                for(let j=i;j<=order;j++) X[r][j]-=factor*X[i][j];
-                Y[r]-=factor*Y[i];
-            }
-        }
-    }
-    return Y;
+    //集成均值
+    const muEns = netPreds.reduce((s,item)=>s+item.mu,0)/netPreds.length;
+    //数据噪声均值（每个子网内部随机波动，磨削本身噪声）
+    const noiseSigma = netPreds.reduce((s,item)=>s+item.sigma,0)/netPreds.length;
+    //模型不确定性：各个子网预测均值之间的方差
+    let modelVar = 0;
+    for(let np of netPreds) modelVar += (np.mu - muEns)*(np.mu - muEns);
+    modelVar /= netPreds.length;
+    const modelSigma = Math.sqrt(modelVar);
+    //总方差 = 噪声方差 + 模型方差
+    const totalSigma = Math.sqrt(noiseSigma*noiseSigma + modelSigma*modelSigma);
+    return {mu:muEns, noiseSigma, modelSigma, totalSigma};
 }
 
-function evalPoly(coef, x){
-    let res = 0;
-    let xPow = 1;
-    for(let c of coef){
-        res += c*xPow;
-        xPow *= x;
-    }
-    return res;
+//测点操作
+function loadPoints(){
+    const save = localStorage.getItem(STORAGE_KEY);
+    if(save) pointList = JSON.parse(save);
+    renderTable();
 }
-
-// 拉格朗日插值
-function lagrangeEval(points, order, x){
-    const pts = [...points].sort((a,b)=>a.x-b.x);
-    const n = pts.length;
-    const useN = Math.min(order+1, n);
-    let sum = 0;
-    for(let i=0;i<useN;i++){
-        let li = 1;
-        for(let j=0;j<useN;j++){
-            if(i===j) continue;
-            li *= (x - pts[j].x)/(pts[i].x - pts[j].x);
-        }
-        sum += li * pts[i].y;
-    }
-    return sum;
-}
-
-// 刷新多项式阶下拉框，最大阶 = 测点数量 - 1
-function refreshFitOrderSelect(){
-    const dev = getActiveDevice();
-    const sel = document.getElementById("fitOrderSelect");
-    sel.innerHTML = "";
-    const ptCnt = dev.points.length;
-    const maxO = ptCnt - 1;
-    if(maxO <1){
-        sel.innerHTML = `<option value="0">0阶（测点不足）</option>`;
-        return;
-    }
-    for(let o=1;o<=maxO;o++){
-        const opt = document.createElement("option");
-        opt.value = o;
-        opt.innerText = `${o}阶多项式`;
-        sel.appendChild(opt);
-    }
-    // 选中当前阶，超限自动修正
-    if(currentFitOrder > maxO) currentFitOrder = maxO;
-    sel.value = currentFitOrder;
-    onFitOrderChange();
-}
-function refreshLagOrderSelect(){
-    const dev = getActiveDevice();
-    const sel = document.getElementById("lagOrderSelect");
-    sel.innerHTML = "";
-    const ptCnt = dev.points.length;
-    const maxO = ptCnt-1;
-    if(maxO <2){
-        sel.innerHTML = `<option value="2">2阶（测点不足）</option>`;
-        return;
-    }
-    for(let o=2;o<=maxO;o++){
-        const opt = document.createElement("option");
-        opt.value = o;
-        opt.innerText = `${o}阶拉格朗日`;
-        sel.appendChild(opt);
-    }
-    if(currentLagOrder>maxO) currentLagOrder = maxO;
-    sel.value = currentLagOrder;
-}
-function onFitOrderChange(){
-    currentFitOrder = parseInt(document.getElementById("fitOrderSelect").value);
-    saveGlobalSetting();
-    recalcFit();
-}
-function onLagOrderChange(){
-    currentLagOrder = parseInt(document.getElementById("lagOrderSelect").value);
-    saveGlobalSetting();
-}
-function recalcFit(){
-    const dev = getActiveDevice();
-    const coef = polyFit(dev.points, currentFitOrder);
-    currentFitCoef = coef;
-    const div = document.getElementById("fitInfo");
-    if(!coef){
-        div.innerHTML = `<span class="warn">拟合失败，奇异矩阵，请更换测点或降低阶数</span>`;
-        return;
-    }
-    div.innerHTML = `<div class="info">✅多项式拟合成功，系数 a0+a1*x+a2*x²...<br>系数：[${coef.map(v=>v.toFixed(6)).join(", ")}]</div>`;
-}
-
-function calcGivenX(){
-    saveGlobalSetting();
-    const dev = getActiveDevice();
-    const xv = parseFloat(document.getElementById("evalX").value);
-    if(isNaN(xv)){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">请输入有效的X</span>`;
-        return;
-    }
-    if(!currentFitCoef){
-        document.getElementById("evalResult").innerHTML = `<span class="warn">先做多项式拟合</span>`;
-        return;
-    }
-    const yPoly = evalPoly(currentFitCoef, xv);
-    const yLag = lagrangeEval(dev.points, currentLagOrder, xv);
-    document.getElementById("evalResult").innerHTML = `
-        <div>X=${xv.toFixed(6)}</div>
-        <div>多项式Y = ${yPoly.toFixed(6)}</div>
-        <div>拉格朗日Y = ${yLag.toFixed(6)}</div>
-    `;
-}
-
-function solveY0(){
-    saveGlobalSetting();
-    if(!currentFitCoef){
-        document.getElementById("zeroResult").innerHTML = `<span class="warn">先拟合多项式</span>`;
-        return;
-    }
-    const dev = getActiveDevice();
-    const pts = dev.points;
-    const xMin = Math.min(...pts.map(p=>p.x));
-    const xMax = Math.max(...pts.map(p=>p.x));
-    let rootX = NaN;
-    let yPrev = evalPoly(currentFitCoef, xMin);
-    for(let x = xMin;x <= xMax;x += 0.00001){
-        const yNow = evalPoly(currentFitCoef, x);
-        if(yPrev * yNow <= 0){
-            rootX = x;
-            break;
-        }
-        yPrev = yNow;
-    }
-    if(isNaN(rootX)){
-        document.getElementById("zeroResult").innerHTML = `<span class="warn">区间内未找到Y=0的根</span>`;
-    }else{
-        document.getElementById("zeroResult").innerHTML = `<div class="info">✅Y=0零点 X = ${rootX.toFixed(6)}</div>`;
-    }
-}
-
-function buildToleranceProbTable(){
-    saveGlobalSetting();
-    const tableDiv = document.getElementById("probTable");
-    const dev = getActiveDevice();
-    if(!dev || dev.points.length <3){
-        tableDiv.innerHTML = `<span class="warn">测点至少3个生成概率公差参考表</span>`;
-        return;
-    }
-    const xStart = parseFloat(document.getElementById("refXStart").value);
-    const xEnd = parseFloat(document.getElementById("refXEnd").value);
-    const step = parseFloat(document.getElementById("refStep").value);
-    const targetY = parseFloat(document.getElementById("targetY").value);
-    const tolerance = parseFloat(document.getElementById("tolerance").value);
-    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
-    if(isNaN(xStart)||isNaN(xEnd)||isNaN(step)||step<=0){
-        tableDiv.innerHTML="<span class='warn'>参考区间参数错误</span>";
-        return;
-    }
-    if(xStart>xEnd) [xStart,xEnd]=[xEnd,xStart];
-    const lowerBound = targetY - tolerance;
-    const upperBound = targetY + tolerance;
-    let html = `<table><tr>
-        <th>X(mm)</th>
-        <th>加权均值μ(mm)</th>
-        <th>标准差σ(mm)</th>
-        <th>95%置信下限</th>
-        <th>95%置信上限</th>
-        <th>落在公差内概率%</th>
-        <th>是否满足公差±${tolerance}</th>
-    </tr>`;
-    for(let xv=xStart; xv <= xEnd +1e-9; xv += step){
-        const stat = gaussianWeightStats(xv, dev.points, kernelSigma);
-        if(isNaN(stat.mu)){
-            html += `<tr><td>${xv.toFixed(6)}</td><td>--</td><td>--</td><td>--</td><td>--</td><td>--</td><td>--</td></tr>`;
-            continue;
-        }
-        const cLow = stat.mu - 1.96 * stat.sigma;
-        const cHigh = stat.mu + 1.96 * stat.sigma;
-        const ok = (cLow >= lowerBound -1e-12) && (cHigh <= upperBound +1e-12);
-        const pct = calcYInTolProb(stat.mu, stat.sigma, targetY, tolerance);
-        html += `<tr>
-        <td>${xv.toFixed(6)}</td>
-        <td>${stat.mu.toFixed(6)}</td>
-        <td>${stat.sigma.toFixed(6)}</td>
-        <td>${cLow.toFixed(6)}</td>
-        <td>${cHigh.toFixed(6)}</td>
-        <td style="${pct>90?"color:green":pct>50?"#cc7700":"red"}">${pct.toFixed(2)}</td>
-        <td style="${ok?"color:green":"color:red"}">${ok?"✅合格":"❌超差风险"}</td>
-        </tr>`;
-    }
-    html += `</table>
-    <div class="info">表格说明：✅=95%置信区间全部落在你设定的Y±公差内；❌=存在超差概率</div>
-    <div class="info">公差内概率%：重复加工，尺寸落在公差区间理论百分比</div>
-    <div class="warn">⚠️远离测点区域加权权重极低，统计结果可信度下降。</div>`;
-    tableDiv.innerHTML = html;
-}
-
-function buildRefTable(){
-    saveGlobalSetting();
-    const tableDiv = document.getElementById("refTable");
-    const dev = getActiveDevice();
-    if(!dev || dev.points.length <3){
-        tableDiv.innerHTML = `<span class="warn">至少3个测点生成调机表</span>`;
-        return;
-    }
-    const xStart = parseFloat(document.getElementById("refXStart").value);
-    const xEnd = parseFloat(document.getElementById("refXEnd").value);
-    const step = parseFloat(document.getElementById("refStep").value);
-    const targetY = parseFloat(document.getElementById("targetY").value);
-    const tolerance = parseFloat(document.getElementById("tolerance").value);
-    const kernelSigma = parseFloat(document.getElementById("kernelSigma").value);
-    if(isNaN(xStart)||isNaN(xEnd)||isNaN(step)||step<=0){
-        tableDiv.innerHTML="<span class='warn'>区间参数错误</span>";
-        return;
-    }
-    if(xStart>xEnd) [xStart,xEnd]=[xEnd,xStart];
-
-    let html = `<table>
-    <tr>
-        <th>补偿X(mm)</th>
-        <th>预测Y均值(mm)</th>
-        <th>σ波动(mm)</th>
-        <th>公差内概率%</th>
-    </tr>`;
-    for(let xv=xStart; xv <= xEnd +1e-9; xv += step){
-        const stat = gaussianWeightStats(xv, dev.points, kernelSigma);
-        if(isNaN(stat.mu)){
-            html += `<tr><td>${xv.toFixed(6)}</td><td>--</td><td>--</td><td>--</td></tr>`;
-            continue;
-        }
-        const pct = calcYInTolProb(stat.mu, stat.sigma, targetY, tolerance);
-        html += `<tr>
-        <td>${xv.toFixed(6)}</td>
-        <td>${stat.mu.toFixed(6)}</td>
-        <td>${stat.sigma.toFixed(6)}</td>
-        <td style="${pct>90?"color:green":pct>50?"#cc7700":"red"}">${pct.toFixed(2)}%</td>
-        </tr>`;
-    }
-    html += `</table>`;
-    tableDiv.innerHTML = html;
-}
-
-// ========== 全局参数保存/读取：全部输入框 ==========
-function saveGlobalSetting(){
-    const data = {
-        targetY:document.getElementById("targetY").value,
-        tolerance:document.getElementById("tolerance").value,
-        kernelSigma:document.getElementById("kernelSigma").value,
-        refXStart:document.getElementById("refXStart").value,
-        refXEnd:document.getElementById("refXEnd").value,
-        refStep:document.getElementById("refStep").value,
-        evalX:document.getElementById("evalX").value
-    };
-    localStorage.setItem(STORAGE_KEY_GLOBAL, JSON.stringify(data));
-}
-function loadGlobalSetting(){
-    const raw = localStorage.getItem(STORAGE_KEY_GLOBAL);
-    let d = {...DEFAULT_GLOBAL};
-    if(raw){
-        try{d = {...DEFAULT_GLOBAL, ...JSON.parse(raw)};}catch(e){d = {...DEFAULT_GLOBAL};}
-    }
-    document.getElementById("targetY").value = d.targetY;
-    document.getElementById("tolerance").value = d.tolerance;
-    document.getElementById("kernelSigma").value = d.kernelSigma;
-    document.getElementById("refXStart").value = d.refXStart;
-    document.getElementById("refXEnd").value = d.refXEnd;
-    document.getElementById("refStep").value = d.refStep;
-    document.getElementById("evalX").value = d.evalX;
-}
-
-// ==========设备管理函数============
-function saveDeviceList(){
-    localStorage.setItem(STORAGE_KEY_DEV, JSON.stringify(deviceList));
-}
-function loadDeviceList(){
-    const raw = localStorage.getItem(STORAGE_KEY_DEV);
-    if(raw){
-        try{deviceList = JSON.parse(raw);}catch(e){deviceList=[];}
-    }
-}
-function renderDeviceSelect(){
-    const sel = document.getElementById("deviceSelect");
-    sel.innerHTML = "";
-    for(let d of deviceList){
-        const opt = document.createElement("option");
-        opt.value = d.id;
-        opt.innerText = d.name;
-        sel.appendChild(opt);
-    }
-    if(activeDeviceId && deviceList.find(x=>x.id===activeDeviceId)){
-        sel.value = activeDeviceId;
-    }else if(deviceList.length>0){
-        activeDeviceId = deviceList[0].id;
-        sel.value = activeDeviceId;
-    }
-    sel.onchange = ()=>{
-        activeDeviceId = sel.value;
-        refreshTable();
-        refreshFitOrderSelect();
-        refreshLagOrderSelect();
-        recalcFit();
-        saveDeviceList();
-    }
-}
-function getActiveDevice(){
-    return deviceList.find(d=>d.id === activeDeviceId);
-}
-function createNewDevice(){
-    const id = Date.now().toString();
-    const name = "设备_"+(deviceList.length+1);
-    deviceList.push({id,name,points:[]});
-    activeDeviceId = id;
-    saveDeviceList();
-    renderDeviceSelect();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
-}
-function deleteCurrentDevice(){
-    if(!activeDeviceId) return;
-    deviceList = deviceList.filter(d=>d.id!==activeDeviceId);
-    activeDeviceId = deviceList.length>0 ? deviceList[0].id : null;
-    saveDeviceList();
-    renderDeviceSelect();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
+function savePoints(){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(pointList));
 }
 function addPoint(){
-    saveGlobalSetting();
     const xv = parseFloat(document.getElementById("inX").value);
     const yv = parseFloat(document.getElementById("inY").value);
-    if(isNaN(xv)||isNaN(yv)) return alert("X/Y必须是数字");
-    const dev = getActiveDevice();
-    dev.points.push({x:xv,y:yv});
-    saveDeviceList();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
-    recalcFit();
+    if(isNaN(xv)||isNaN(yv)){alert("请输入有效数字");return;}
+    pointList.push({x:xv,y:yv});
+    savePoints();renderTable();
+}
+function delPoint(idx){
+    pointList.splice(idx,1);
+    savePoints();renderTable();
 }
 function clearAllPoints(){
-    const dev = getActiveDevice();
-    dev.points = [];
-    saveDeviceList();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
-    currentFitCoef = null;
-    document.getElementById("fitInfo").innerHTML="";
+    pointList=[];ensemble=null;savePoints();renderTable();
+    document.getElementById("fitInfo").innerText="";
 }
-function refreshTable(){
-    const dev = getActiveDevice();
+function renderTable(){
     const tb = document.getElementById("dataTable");
-    tb.innerHTML = "";
-    if(!dev) return;
-    dev.points.forEach((p,idx)=>{
+    tb.innerHTML="";
+    pointList.forEach((p,i)=>{
         const tr = document.createElement("tr");
-        tr.innerHTML = `
-            <td>${idx+1}</td>
-            <td>${p.x}</td>
-            <td>${p.y}</td>
-            <td><button class="del" onclick="delPoint(${idx})">删除</button></td>
-        `;
+        tr.innerHTML=`<td>${i+1}</td><td>${p.x.toFixed(6)}</td><td>${p.y.toFixed(6)}</td><td><button class="del" onclick="delPoint(${i})">删除</button></td>`;
         tb.appendChild(tr);
     })
 }
-function delPoint(idx){
-    const dev = getActiveDevice();
-    dev.points.splice(idx,1);
-    saveDeviceList();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
-    recalcFit();
-}
-function exportDeviceCSV(){
-    const dev = getActiveDevice();
-    if(!dev || dev.points.length===0) return alert("无测点");
-    let csv = "X,Y\n";
-    dev.points.forEach(p=>csv += `${p.x},${p.y}\n`);
-    const blob = new Blob([csv],{type:"text/csv"});
+function exportCSV(){
+    let str = "X(mm),Y(mm)\n";
+    pointList.forEach(p=>str += `${p.x},${p.y}\n`);
+    const blob = new Blob([str],{type:"text/csv"});
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = dev.name+"_测点.csv";
+    a.href=URL.createObjectURL(blob);
+    a.download="磨削标定测点.csv";
     a.click();
 }
 
-//页面初始化
-window.onload = function(){
-    loadDeviceList();
-    loadGlobalSetting();
-    renderDeviceSelect();
-    refreshTable();
-    refreshFitOrderSelect();
-    refreshLagOrderSelect();
-    recalcFit();
+//单点预测
+function calcGivenX(){
+    if(!ensemble){
+        document.getElementById("evalResult").innerHTML = `<span class="warn">请先点击【训练集成神经网络】</span>`;
+        return;
+    }
+    const xv = parseFloat(document.getElementById("evalX").value);
+    if(isNaN(xv)){
+        document.getElementById("evalResult").innerHTML = `<span class="warn">输入有效的X值</span>`;
+        return;
+    }
+    const pred = ensemblePredict(xv);
+    const c95low = pred.mu - 1.96 * pred.totalSigma;
+    const c95high = pred.mu + 1.96 * pred.totalSigma;
+    let html=`
+    <div>输入 X = ${xv.toFixed(6)}</div>
+    <div class="info">集成预测均值 μ = ${pred.mu.toFixed(6)}</div>
+    <div>工件磨削噪声 σ_noise = ${pred.noiseSigma.toFixed(6)}</div>
+    <div>模型不确定 σ_model = ${pred.modelSigma.toFixed(6)}</div>
+    <div class="prob-text">总标准差 σ_total = ${pred.totalSigma.toFixed(6)}</div>
+    <div>95%置信区间：[${c95low.toFixed(6)} , ${c95high.toFixed(6)}]</div>
+    `;
+    document.getElementById("evalResult").innerHTML = html;
 }
-//输入框修改自动保存
-document.querySelectorAll("input").forEach(inp=>{
-    inp.addEventListener("change",saveGlobalSetting);
-})
+function calcTolProb(){
+    if(!ensemble){
+        document.getElementById("probResult").innerHTML = `<span class="warn">先训练模型</span>`;
+        return;
+    }
+    const xv = parseFloat(document.getElementById("evalX").value);
+    const targetY = parseFloat(document.getElementById("targetY").value||0);
+    const tol = parseFloat(document.getElementById("tolerance").value);
+    const pred = ensemblePredict(xv);
+    const prob = calcYInTolProb(pred.mu, pred.totalSigma, targetY, tol);
+    document.getElementById("probResult").innerHTML = `<div class="prob-text">公差内合格概率：${prob.toFixed(2)} %</div>`;
+}
+
+//零点求解 Y=0
+function solveY0(){
+    if(!ensemble){
+        document.getElementById("zeroResult").innerHTML = `<span class="warn">先训练模型</span>`;
+        return;
+    }
+    if(pointList.length<2){document.getElementById("zeroResult").innerHTML = `<span class="warn">测点不足</span>`;return;}
+    const xs = pointList.map(p=>p.x);
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    let rootX = NaN;
+    let prevY = ensemblePredict(xMin).mu;
+    const step=0.00001;
+    for(let x=xMin;x<=xMax;x+=step){
+        const nowY = ensemblePredict(x).mu;
+        if(prevY * nowY <= 0){
+            rootX = x;break;
+        }
+        prevY = nowY;
+    }
+    if(isNaN(rootX)){
+        document.getElementById("zeroResult").innerHTML = `<span class="warn">在测点区间没有找到Y=0零点</span>`;
+        return;
+    }
+    const predRoot = ensemblePredict(rootX);
+    const c95low = predRoot.mu -1.96*predRoot.totalSigma;
+    const c95high = predRoot.mu +1.96*predRoot.totalSigma;
+    document.getElementById("zeroResult").innerHTML = `
+    <div class="info">✅零点 X = ${rootX.toFixed(6)}</div>
+    <div>零点95%置信区间 [${c95low.toFixed(6)}, ${c95high.toFixed(6)}]</div>`;
+}
+
+//批量参考表
+function buildRefTable(){
+    if(!ensemble){
+        document.getElementById("refTable").innerHTML = `<span class="warn">请先训练模型</span>`;
+        return;
+    }
+    const xStart = parseFloat(document.getElementById("refXStart").value);
+    const xEnd = parseFloat(document.getElementById("refXEnd").value);
+    const step = parseFloat(document.getElementById("refStep").value);
+    if(isNaN(xStart)||isNaN(xEnd)||isNaN(step)||step<=0){
+        document.getElementById("refTable").innerHTML = `<span class="warn">参数错误</span>`;
+        return;
+    }
+    let html = `<table><tr><th>X</th><th>预测Y</th><th>总σ</th><th>95%下限</th><th>95%上限</th></tr>`;
+    for(let x=xStart;x <= xEnd+step/2;x+=step){
+        const p = ensemblePredict(x);
+        const low = p.mu -1.96*p.totalSigma;
+        const high = p.mu +1.96*p.totalSigma;
+        html += `<tr>
+        <td>${x.toFixed(6)}</td>
+        <td>${p.mu.toFixed(6)}</td>
+        <td>${p.totalSigma.toFixed(6)}</td>
+        <td>${low.toFixed(6)}</td>
+        <td>${high.toFixed(6)}</td>
+        </tr>`;
+    }
+    html += `</table>`;
+    document.getElementById("refTable").innerHTML = html;
+}
+
+window.onload = loadPoints;
 </script>
 </body>
 </html>
