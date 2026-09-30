@@ -46,7 +46,7 @@ th{background:#efefef}
     <span>输出Y = 均值Ymean + 偏移 ×1.96×全局σ</span>
 </div>
 <div class="row">
-    <button onclick="startTrain()">开始训练（加大正则，抑制Y剧烈跳动）</button>
+    <button onclick="startTrain()">开始训练（弱正则，保留真实趋势）</button>
 </div>
 </div>
 
@@ -91,7 +91,7 @@ th{background:#efefef}
 </div>
 
 <script>
-const STORAGE_KEY = "grind_calc_points_v3";
+const STORAGE_KEY = "grind_calc_points_v4";
 let pointList = [];
 let modelWeights = null;
 let normPara = null;
@@ -120,11 +120,11 @@ function getZ(mu,sigma,val){
     return (val - mu)/sigma;
 }
 
-// Worker内部训练代码，增大L2正则，抑制过拟合（解决X微小变化Y剧烈跳动）
+// Worker内部训练代码，弱L2正则，保留真实变化趋势
 const workerCode = `
 function tanh(v){return Math.tanh(v);}
 function trainNet(points){
-    const h1=12,h2=6; //减少神经元，降低过拟合
+    const h1=20,h2=10; //增加神经元，提升拟合能力
     let w1 = Array.from({length:1},()=>Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.8));
     let b1 = Array(h1).fill(0).map(()=>(Math.random()-0.5)*0.2);
     let w2 = Array.from({length:h1},()=>Array(h2).fill(0).map(()=>(Math.random()-0.5)*0.8));
@@ -143,7 +143,7 @@ function trainNet(points){
 
     const epochs = 5000;
     const lr = 0.007;
-    const L2 = 0.00015; //加大正则，压制过拟合，消除微小X变化Y剧烈跳动
+    const L2 = 0.00001; //降低正则强度，不再强行抹平曲线
     for(let e=0;e<epochs;e++){
         for(const p of points){
             const xn = normX(p.x);
@@ -393,7 +393,11 @@ function addPoint(){
 }
 function delPoint(idx){
     pointList.splice(idx,1);
+    modelWeights=null;
+    globalSigma=0;
+    globalMAE=0;
     renderTable();
+    document.getElementById("fitInfo").innerText="";
 }
 function clearAllPoints(){
     pointList=[];
